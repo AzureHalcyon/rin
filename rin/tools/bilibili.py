@@ -32,8 +32,7 @@ from typing import Dict, List, Optional
 
 from loop import prompt_files
 
-NAMES = ("bilibili_search", "bilibili_video", "bilibili_subtitles",
-         "bilibili_playurl", "bilibili_transcript")
+NAMES = ("bilibili",)
 
 BASE = "https://api.bilibili.com"
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -46,10 +45,34 @@ MAX_TRANSCRIPT_CHARS = 6000
 ASR_URL = os.environ.get(
     "ASR_URL",
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
-ASR_MODEL = os.environ.get("ASR_MODEL", "qwen-audio-3.1-asr-flash")
+ASR_MODEL_DEFAULT = "qwen-audio-3.1-asr-flash"
 ASR_CHUNK_SECONDS = 290          # 单段上限：这一族模型一次最多 300 秒，留 10 秒余量
 ASR_MAX_SECONDS = 1800           # 一次最多转 30 分钟，超了截断并说明
-FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
+
+# 设置页「B 站」那一组存的三个键落在这里：改完下一次调用就生效。
+_OVERRIDES: Dict[str, str] = {}
+
+
+def configure(values: dict) -> None:
+    """入口与网关把设置里存的那几个键递进来（sessdata / ffmpeg / 转写模型）。"""
+    for key in ("bili_sessdata", "bili_ffmpeg", "bili_asr_model"):
+        _OVERRIDES[key] = str((values or {}).get(key) or "").strip()
+
+
+def _setting(key: str, env: str, fallback: str = "") -> str:
+    value = str(_OVERRIDES.get(key) or "").strip()
+    if value:
+        return value
+    return str(os.environ.get(env) or "").strip() or fallback
+
+
+def _ffmpeg() -> str:
+    return _setting("bili_ffmpeg", "FFMPEG", "ffmpeg")
+
+
+def _asr_model() -> str:
+    return _setting("bili_asr_model", "ASR_MODEL", ASR_MODEL_DEFAULT)
+
 
 # wbi 签名用的固定置换表
 _MIXIN_TAB = (
@@ -107,7 +130,7 @@ def _headers(with_cookie: bool = True) -> Dict[str, str]:
     if with_cookie:
         # 登录 cookie 和匿名 buvid 要一起带：只给 SESSDATA 时播放器接口容易被 WAF 打回 412。
         parts = []
-        sessdata = os.environ.get("BILI_SESSDATA", "").strip()
+        sessdata = _setting("bili_sessdata", "BILI_SESSDATA")
         if sessdata:
             parts.append("SESSDATA=" + sessdata)
         anonymous = _anonymous_cookies()
@@ -364,36 +387,69 @@ _SCHEMAS = {
 }
 
 
+_ACTIONS = ("search", "video", "subtitles", "playurl", "transcript")
+def _action_calls() -> dict:
+    """动作 → 实现。`_transcript` 在文件后面才定义，所以等调用时再取。"""
+    return {"search": _search, "video": _video, "subtitles": _subtitles,
+            "playurl": _playurl, "transcript": _transcript}
+_ACTION_SCHEMAS = {action: _SCHEMAS["bilibili_" + action] for action in _ACTIONS}
+
+
+def _help_text() -> str:
+    """动作清单：哪几个、各要什么参数。"""
+    lines = ["bilibili 的 %d 个动作：" % len(_ACTIONS)]
+    for action in _ACTIONS:
+        schema = _ACTION_SCHEMAS[action]
+        params = []
+        for name in schema["properties"]:
+            params.append(name + ("" if name in schema.get("required", []) else "?"))
+        lines.append("- %s(%s)" % (action, ", ".join(params)))
+    lines.append("")
+    lines.append("参数：keyword 关键词；bvid 视频号；qn 清晰度 16/32/64/80；"
+                 "language 字幕语言；page/page_size/order 搜索翻页与排序。")
+    return "\n".join(lines)
+
+
 def tools() -> List[dict]:
     text = prompt_files.tool_texts()
-    out = []
-    for name in NAMES:
-        schema = json.loads(json.dumps(_SCHEMAS[name]))
-        for param in schema["properties"]:
-            label = text.get(name + "." + param, "")
-            if label:
-                schema["properties"][param]["description"] = label
-        out.append({"type": "function",
-                    "function": {"name": name,
-                                 "description": text[name],
-                                 "parameters": schema}})
-    return out
+    return [{"type": "function", "function": {
+        "name": "bilibili",
+        "description": text["bilibili"],
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "description": text["bilibili.action"]},
+                "params": {"type": "object",
+                           "description": text["bilibili.params"]},
+            },
+            "required": ["action"],
+        },
+    }}]
 
 
 def call(name: str, arguments: str) -> str:
-    payload = {}
-    if str(arguments or "").strip():
-        try:
-            payload = json.loads(arguments)
-        except ValueError:
-            return "%s 的参数不是 JSON。" % name
-        if not isinstance(payload, dict):
-            return "%s 的参数不是对象。" % name
-    handler = _CALLS.get(name)
-    if handler is None:
+    if name != "bilibili":
         return "没有这个工具：%s" % name
     try:
-        return handler({}, payload)
+        payload = json.loads(arguments or "{}")
+    except ValueError:
+        return "参数不是 JSON。"
+    if not isinstance(payload, dict):
+        return "参数不是对象。"
+    action = str(payload.get("action") or "").strip()
+    if action in ("", "help", "index"):
+        return _help_text()
+    params = payload.get("params")
+    if params is None:
+        params = {}
+    if not isinstance(params, dict):
+        return "params 要是一个对象。"
+    handler = _action_calls().get(action)
+    if handler is None:
+        return "没有这个动作：%s。\n%s" % (action, _help_text())
+    try:
+        return handler({}, params)
     except BiliError as exc:
         return "bilibili 出错了：%s" % exc
 
@@ -403,7 +459,7 @@ def _transcript(text: dict, payload: dict) -> str:
     """没有字幕轨时的退路：拉低清 mp4 → ffmpeg 抽音轨切段 → 百炼转写。"""
     bvid = _bvid(payload)
     if not bvid:
-        return "bilibili_transcript 需要 bvid。"
+        return "transcript 需要 bvid。"
     key = str(os.environ.get("ASR_KEY") or "").strip()
     if not key:
         return "语音转写没配：环境里要有 ASR_KEY（入口会拿凭证里的键填上）。"
@@ -430,7 +486,7 @@ def _transcript(text: dict, payload: dict) -> str:
             return "下载视频失败：%s" % exc
         chunks = _split_audio(mp4, work, seconds)
         if not chunks:
-            return "抽音轨失败：%s 跑不起来，或这条视频没有音轨。" % FFMPEG
+            return "抽音轨失败：%s 跑不起来，或这条视频没有音轨。" % _ffmpeg()
         pieces = []
         for path in chunks:
             piece = _asr_file(path, key)
@@ -501,14 +557,14 @@ def _split_audio(mp4: str, work: str, seconds: int) -> List[str]:
     """抽成 16k 单声道 mp3，按 10 分钟切段；切不开就整段一个文件。"""
     limit = max(1, min(seconds or ASR_MAX_SECONDS, ASR_MAX_SECONDS))
     pattern = os.path.join(work, "chunk%03d.mp3")
-    code = _run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", mp4,
+    code = _run([_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", mp4,
                  "-t", str(limit), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k",
                  "-f", "segment", "-segment_time", str(ASR_CHUNK_SECONDS), pattern])
     if code == 0:
         return sorted(os.path.join(work, name) for name in os.listdir(work)
                       if name.startswith("chunk") and name.endswith(".mp3"))
     single = os.path.join(work, "audio.mp3")
-    code = _run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", mp4,
+    code = _run([_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", mp4,
                  "-t", str(limit), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k",
                  single])
     return [single] if code == 0 and os.path.exists(single) else []
@@ -518,7 +574,7 @@ def _asr_file(path: str, key: str) -> str:
     with open(path, "rb") as handle:
         payload = handle.read()
     body = {
-        "model": ASR_MODEL,
+        "model": _asr_model(),
         "input": {"messages": [{"role": "user", "content": [
             {"audio": "data:audio/mpeg;base64," + base64.b64encode(payload).decode()}]}]},
         # qwen-audio-3.x 要显式给格式，否则 400 UNSUPPORTED_FORMAT: format is empty

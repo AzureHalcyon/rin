@@ -384,6 +384,13 @@ class _Handler(BaseHTTPRequestHandler):
         """渠道换了：盖到凭证上，重建对话/摘要/嵌入三处客户端，清掉模型缓存。"""
         credentials = getattr(self.server, "credentials", None)
         settings.apply_credentials(credentials, stored)
+        # 工具那边的凭据（B 站的 cookie / ffmpeg / 转写模型、QQ 的令牌）存完就生效，
+        # 不用等重启：它们每次调用现读。
+        try:
+            from rin.tools import bilibili as bili_tool
+            bili_tool.configure(settings.channel(stored))
+        except Exception as exc:
+            self._note("[工具] 应用 B 站设置失败：%s" % exc)
         loop = getattr(self.server, "loop", None)
         config = self.server.config
         if credentials is not None and loop is not None:
@@ -414,9 +421,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _save_prompt(self):
         payload = self._body()
         key = str(payload.get("key") or "")
+        text = str(payload.get("text") or "")
+        if key == "persona-written":
+            # 她自己写的那段：这里改等于人替她改，同时把"上次改写时间"往后推，
+            # 免得刚改完又被后台整理覆盖掉。
+            try:
+                persona.write(self.server.config, text)
+                persona.touch_stamp(self.server.config)
+            except Exception as exc:
+                return self._send(400, {"error": "写不进去：%s" % exc})
+            return self._send(200, {"ok": True})
         try:
-            prompt_files.write_override(self.server.data_dir, key,
-                                        str(payload.get("text") or ""))
+            prompt_files.write_override(self.server.data_dir, key, text)
         except prompt_files.PromptError as exc:
             return self._send(400, {"error": str(exc)})
         return self._send(200, {"ok": True})
@@ -510,21 +526,91 @@ class _Handler(BaseHTTPRequestHandler):
                 "embed_host": str(getattr(self.server, "embed_host", "") or "")}
 
     # ── 设置视图 ──────────────────────────────────────────────────────────
-    def _settings_payload(self) -> dict:
-        config = self.server.config
-        data_dir = self.server.data_dir
-        store = _store_of(self.server)
-        prompts = []
+    # 真实注入顺序：system 先（声音 → 机制 → 她自己写的那段），再工具描述
+    # （按工具面的顺序：记忆 → wait → 收件箱 → 上网 → 命令 → 工作区 → B 站 → QQ），
+    # 最后是"用到时才拼进去"的那几份。设置页按这个顺序排。
+    _PROMPTS_IN_ORDER = (
+        ("voice", "常驻 System"),
+        ("sink", "常驻 System"),
+        ("persona-written", "常驻 System"),
+        ("remember", "工具描述"),
+        ("link", "工具描述"),
+        ("recall", "工具描述"),
+        ("recollect", "工具描述"),
+        ("forget", "工具描述"),
+        ("rename", "工具描述"),
+        ("wait", "工具描述"),
+        ("channels", "工具描述"),
+        ("channels_set", "工具描述"),
+        ("messages", "工具描述"),
+        ("fetch", "工具描述"),
+        ("search", "工具描述"),
+        ("run", "工具描述"),
+        ("write", "工具描述"),
+        ("bilibili_search", "工具描述"),
+        ("bilibili_video", "工具描述"),
+        ("bilibili_subtitles", "工具描述"),
+        ("bilibili_playurl", "工具描述"),
+        ("bilibili_transcript", "工具描述"),
+        ("qq", "工具描述"),
+        ("compress-system", "按需调用"),
+        ("compress", "按需调用"),
+        ("watchdog", "按需调用"),
+        ("persona", "按需调用"),
+        ("ask", "按需调用"),
+    )
+
+    def _prompt_rows(self, config) -> list:
+        """设置页的提示词清单，按真实注入顺序排；她自己写的那段也在里面。"""
         current = prompt_files.overrides()
-        for key, (label, desc, filename) in prompt_files.META.items():
+        listed = {key for key, _ in self._PROMPTS_IN_ORDER}
+        rows = []
+        for key, section in self._PROMPTS_IN_ORDER:
+            if key == "persona-written":
+                rows.append({
+                    "key": key, "section": section,
+                    "label": "自我描述 · 她自己写的",
+                    "desc": "她在后台整理出来的那一段：接在 sink 之后、旧段之前。"
+                            "「自我描述」关掉时不注入。",
+                    "file": "persona.md", "default": "", "override": "",
+                    "text": persona.read(config), "resettable": False,
+                    "state": "她写的",
+                    "note": "" if bool(getattr(config, "persona_enabled", False))
+                            else "现在是关着的（节奏 → 自我描述）"})
+                continue
+            if key not in prompt_files.META:
+                continue
+            label, desc, filename = prompt_files.META[key]
             try:
                 default = prompt_files.default_text(key)
             except Exception:
                 default = ""
             override = str(current.get(key) or "")
-            prompts.append({"key": key, "label": label, "desc": desc,
-                            "file": filename, "default": default,
-                            "override": override, "text": override or default})
+            rows.append({"key": key, "section": section, "label": label,
+                         "desc": desc, "file": filename, "default": default,
+                         "override": override, "text": override or default,
+                         "resettable": True, "note": "",
+                         "state": "已覆盖" if override else "默认"})
+        for key, (label, desc, filename) in prompt_files.META.items():
+            if key in listed:
+                continue
+            try:
+                default = prompt_files.default_text(key)
+            except Exception:
+                default = ""
+            override = str(current.get(key) or "")
+            rows.append({"key": key, "section": "其他", "label": label,
+                         "desc": desc, "file": filename, "default": default,
+                         "override": override, "text": override or default,
+                         "resettable": True, "note": "",
+                         "state": "已覆盖" if override else "默认"})
+        return rows
+
+    def _settings_payload(self) -> dict:
+        config = self.server.config
+        data_dir = self.server.data_dir
+        store = _store_of(self.server)
+        prompts = self._prompt_rows(config)
         values = settings.effective(config)
         creds = getattr(self.server, "credentials", None)
         hints = settings.hints(data_dir)

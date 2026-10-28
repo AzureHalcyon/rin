@@ -50,15 +50,16 @@ data/                  她的运行数据（不进版本控制）
 
 ## B 站
 
-五个工具，走 B 站网页版公开接口（和 `dsh-bilibili` 插件的做法一致）：
+一个入口、五个动作（和 QQ 那边一样：动作名 + 参数，记不清就
+`bilibili(action="help")`）：
 
-| 工具 | 干什么 |
+| 动作 | 干什么 |
 |---|---|
-| `bilibili_search` | 按关键词搜，返回 bvid、标题、UP、播放、时长 |
-| `bilibili_video` | 一条的完整元数据（简介、分P、cid、链接） |
-| `bilibili_subtitles` | 取字幕成片文字（**要登录 cookie**，很多轨匿名拿不到） |
-| `bilibili_playurl` | 单段 mp4 直链 |
-| `bilibili_transcript` | 没字幕时：下载 → ffmpeg 抽音轨 → 百炼 `qwen3-asr-flash` 转写 |
+| `search` | 按关键词搜，返回 bvid、标题、UP、播放、时长 |
+| `video` | 一条的完整元数据（简介、分P、cid、链接） |
+| `subtitles` | 取字幕成片文字（**要登录 cookie**，很多轨匿名拿不到） |
+| `playurl` | 单段 mp4 直链 |
+| `transcript` | 没字幕时：下载 → ffmpeg 抽音轨 → 百炼 `qwen3-asr-flash` 转写 |
 
 三样东西要准备：
 
@@ -79,7 +80,7 @@ data/                  她的运行数据（不进版本控制）
 ```
 qq(action="get_friend_list", params={})
 qq(action="get_group_list", params={})
-qq(action="send_private_msg", params={"user_id": 2189761707, "message": "在"})
+qq(action="send_private_msg", params={"user_id": 10001, "message": "在"})
 ```
 
 NapCat（OneBot 11）有九十来个动作：群管理、文件、相册、空间、资料、好友请求…

@@ -1,0 +1,18 @@
+看 bilibili 的视频：搜、取详情、取字幕、拿直链、没字幕时转文字。
+
+```
+bilibili(action="search", params={"keyword": "shelter"})
+bilibili(action="video", params={"bvid": "BV1qbtLzdEAk"})
+bilibili(action="subtitles", params={"bvid": "BV1qbtLzdEAk"})
+```
+
+五个动作：`search`（关键词搜）、`video`（详情）、`subtitles`（字幕）、
+`playurl`（mp4 直链）、`transcript`（下载抽音轨再转文字，慢，一次最多 30 分钟）。
+记不清参数就 `bilibili(action="help")`。
+
+## action
+`search` / `video` / `subtitles` / `playurl` / `transcript`，或者 `help`。
+
+## params
+按动作给：`search` 要 `keyword`；其余要 `bvid`；`playurl` 可加 `qn`（16/32/64/80）；
+`subtitles` 可加 `language`。

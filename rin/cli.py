@@ -243,12 +243,23 @@ def main(argv=None) -> int:
         threading.Thread(target=_stdin_pump, args=(config.db_path(),),
                          daemon=True).start()
 
-    # QQ 的动作清单现写一份进工作区：她自己查得到，改了代码下次起来就更新
+    # QQ 的动作清单现写一份进工作区：索引 + 每组分页，她自己查得到
     try:
         from rin.tools import qq as qq_tool
-        print("[QQ] 动作清单：%s" % qq_tool.write_doc(config), flush=True)
+        paths = qq_tool.write_docs(config)
+        print("[QQ] 动作清单：%d 个文件，索引 %s"
+              % (len(paths), qq_tool.doc_path(config)), flush=True)
     except OSError as exc:
         print("[QQ] 动作清单写不进去：%s" % exc, flush=True)
+
+    # 设置页存的工具凭据（B 站那三个键）在这里生效
+    try:
+        from rin import settings as settings_mod
+        from rin.tools import bilibili as bili_tool
+        bili_tool.configure(settings_mod.channel(
+            settings_mod.load(config.data_dir)))
+    except Exception as exc:
+        print("[工具] 读设置失败：%s" % exc, flush=True)
 
     if args.http:
         host, _, port_text = args.http.rpartition(":")

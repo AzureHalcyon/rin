@@ -18,7 +18,8 @@ import os
 import time
 
 # 组名按这个顺序显示；账目的分组借用 App 那边的说法。
-GROUPS = ("模型", "接口", "上下文", "记忆", "命令", "成本", "节奏")
+GROUPS = ("模型", "接口", "上下文", "记忆", "命令", "成本", "节奏",
+          "B 站", "QQ", "提示词", "改动记录")
 
 # 网页表单就按这张表画。加一个旋钮 = 在这里加一行 + `LoopConfig` 里加字段。
 # 空着是有意义的（空 = 跟主模型走、空 = 用凭证文件）就写 `"optional": True`：
@@ -127,10 +128,24 @@ FIELDS = (
      "help": "连续几步没有外界动静就问一句「还在做事吗」；0=不问"},
     {"key": "retry_delay", "group": "节奏", "label": "重试起点（秒）", "type": "float",
      "min": 1, "max": 600, "help": "模型调不通时先等这么久，之后翻倍"},
+
+    {"key": "bili_sessdata", "group": "B 站", "label": "登录 cookie（SESSDATA）",
+     "type": "text", "secret": True,
+     "help": "登录后 cookie 里 SESSDATA 那段（裸值）；有它才拿得到多数字幕轨"},
+    {"key": "bili_ffmpeg", "group": "B 站", "label": "ffmpeg 路径", "type": "text",
+     "optional": True, "help": "转写时抽音轨用；空 = 用 PATH 里的 ffmpeg"},
+    {"key": "bili_asr_model", "group": "B 站", "label": "转写模型", "type": "text",
+     "optional": True, "help": "没字幕时用哪个模型转；空 = qwen-audio-3.1-asr-flash"},
+
+    {"key": "qq_base", "group": "QQ", "label": "NapCat 地址", "type": "text",
+     "optional": True, "help": "qq 工具调 OneBot 的地址；空 = http://127.0.0.1:3000"},
+    {"key": "qq_token", "group": "QQ", "label": "NapCat 令牌", "type": "text",
+     "secret": True, "help": "留空 = 不改；空着就用环境里的 NAPCAT_TOKEN"},
 )
 
 _KEYS = [field["key"] for field in FIELDS]
 _BY_KEY = {field["key"]: field for field in FIELDS}
+_SECRET_KEYS = tuple(field["key"] for field in FIELDS if field.get("secret"))
 
 
 class SettingsError(ValueError):
@@ -282,7 +297,10 @@ def history(data_dir: str, limit: int = 40) -> list:
     return out
 
 
-CHANNEL_KEYS = ("chat_url", "chat_key", "embed_url", "embed_key")
+# 存在 settings.json、不进 LoopConfig 的键：接口凭据 + 两个工具的凭据。
+CHANNEL_KEYS = ("chat_url", "chat_key", "embed_url", "embed_key",
+                "bili_sessdata", "bili_ffmpeg", "bili_asr_model",
+                "qq_base", "qq_token")
 
 
 def embed_base_of(value) -> str:

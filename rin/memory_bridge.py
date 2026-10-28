@@ -223,6 +223,15 @@ class MemoryBridge(Memory):
         if reason == "name_required":
             return ("remember 需要 name 或 event：没有说记到哪一件上，这次什么都没写。"
                     "新开一件就给 name；改旧的那件就给 event（id 或名字）。")
+        if reason == "likely_duplicate":
+            lines = ["已经有一件很像的（%s）：" % (data.get("name") or "")]
+            for item in (data.get("candidates") or [])[:3]:
+                lines.append("  %s %s · %s · 相似 %.2f" % (
+                    item.get("id"), item.get("name"), item.get("date"),
+                    float(item.get("score") or 0)))
+            lines.append("要并进那一件就把它的 id 放进 event；"
+                         "确实是另一件事，就换个更具体的名字再来。这次没新建。")
+            return "\n".join(lines)
         if reason == "duplicate_note":
             return ("这条和「%s」里已经记的一字不差，没再写。要改就换个说法。"
                     % (data.get("before") or ""))

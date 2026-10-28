@@ -1565,7 +1565,6 @@ function renderSettings(data) {
 
   const sec1 = document.createElement("div");
   sec1.className = "sec";
-  sec1.innerHTML = "<h3>运行参数</h3>";
   const chips = document.createElement("div");
   chips.className = "chips";
   if (!SET_GROUP) SET_GROUP = data.groups[0];
@@ -1577,13 +1576,19 @@ function renderSettings(data) {
     chips.appendChild(b);
   }
   sec1.appendChild(chips);
-  for (const f of data.fields) {
-    if ((f.group || data.groups[0]) !== SET_GROUP) continue;
-    const cur = (data.stored && data.stored[f.key] !== undefined)
-      ? data.stored[f.key] : data.values[f.key];
-    const pending = (data.stored && data.stored[f.key] !== undefined) &&
-      fmtVal(cur) !== fmtVal(data.values[f.key]);
-    sec1.appendChild(fieldRow(f, cur, data.defaults[f.key], pending));
+  const heading = document.createElement("h3");
+  heading.textContent = SET_GROUP;
+  sec1.appendChild(heading);
+  const noFields = SET_GROUP === "提示词" || SET_GROUP === "改动记录";
+  if (!noFields) {
+    for (const f of data.fields) {
+      if ((f.group || data.groups[0]) !== SET_GROUP) continue;
+      const cur = (data.stored && data.stored[f.key] !== undefined)
+        ? data.stored[f.key] : data.values[f.key];
+      const pending = (data.stored && data.stored[f.key] !== undefined) &&
+        fmtVal(cur) !== fmtVal(data.values[f.key]);
+      sec1.appendChild(fieldRow(f, cur, data.defaults[f.key], pending));
+    }
   }
   if (SET_GROUP === "记忆" && data.memory) {
     const m = data.memory;
@@ -1598,17 +1603,68 @@ function renderSettings(data) {
   }
   box.appendChild(sec1);
 
-  /* 会话与策略：哪个通道、哪个会话、攒了多少、要不要叫醒她。
+  /* 提示词：自己一项。顺序就是真实注入顺序（system → 工具描述 → 按需调用），
+     她自己写的那段排在 sink 后面。 */
+  if (SET_GROUP === "提示词") {
+    let seen = null;
+    for (const p of data.prompts) {
+      if (p.section !== seen) {
+        seen = p.section || "";
+        const h = document.createElement("h3");
+        h.textContent = seen || "其他";
+        sec1.appendChild(h);
+      }
+      const det = document.createElement("details");
+      det.className = "pblock";
+      det.innerHTML = '<summary>' + esc(p.label) +
+        '<span class="meta">' + esc(p.state || "") + " · " + esc(p.file) +
+        '</span></summary><div class="pbody">' +
+        '<div class="desc">' + esc(p.desc) + "</div>" +
+        (p.note ? '<div class="desc">' + esc(p.note) + "</div>" : "") +
+        '<textarea data-pkey="' + esc(p.key) + '">' + esc(p.text) + "</textarea>" +
+        '<div class="acts"><button data-psave="' + esc(p.key) + '">保存这份</button>' +
+        (p.resettable ? '<button data-preset="' + esc(p.key) + '">恢复默认</button>' : "") +
+        "</div></div>";
+      sec1.appendChild(det);
+    }
+  }
+
+  /* 改动记录：自己一项。谁、什么时候、从什么改成什么。 */
+  if (SET_GROUP === "改动记录") {
+    if (!data.history || !data.history.length) {
+      const p = document.createElement("div");
+      p.className = "hint";
+      p.textContent = "还没有改过。";
+      sec1.appendChild(p);
+    }
+    for (const h of (data.history || []).slice(0, 60)) {
+      const row = document.createElement("div");
+      row.className = "hist";
+      row.innerHTML = "<span>" + esc(h.ts || "") + "</span><b>" +
+        esc(h.label || h.key) + "</b><span>" + esc(fmtVal(h.from)) + " → " +
+        esc(fmtVal(h.to)) + "</span>";
+      sec1.appendChild(row);
+    }
+  }
+
+  /* 会话与策略：哪个会话、攒了多少、要不要叫醒她。挂在 QQ 这一项下面。
      列表是异步拿的（要读库），所以先放个占位再填。 */
-  const secC = document.createElement("div");
-  secC.className = "sec";
-  secC.innerHTML = "<h3>会话与策略</h3>";
-  const cbox = document.createElement("div");
-  cbox.className = "hint";
-  cbox.textContent = "读一点…";
-  secC.appendChild(cbox);
-  box.appendChild(secC);
-  loadChannels(cbox);
+  if (SET_GROUP === "QQ") {
+    const secC = document.createElement("div");
+    secC.className = "sec";
+    secC.innerHTML = "<h3>会话与策略</h3>";
+    const docLine = document.createElement("div");
+    docLine.className = "hint";
+    docLine.textContent = "她的动作清单在数据目录的 workspace/QQ-动作清单.md（索引）" +
+      "和 workspace/QQ-动作/（每组分页）。";
+    secC.appendChild(docLine);
+    const cbox = document.createElement("div");
+    cbox.className = "hint";
+    cbox.textContent = "读一点…";
+    secC.appendChild(cbox);
+    box.appendChild(secC);
+    loadChannels(cbox);
+  }
 
   /* 真账：`usage` 表全部。它不随删记录退（钱已经花了），所以和输入框下面那行
      分开摆——那里只算还挂在记录上的步。 */
@@ -1635,43 +1691,7 @@ function renderSettings(data) {
   note.style.padding = "6px 0 0";
   note.textContent = "这是真账，删记录不退；输入框下面那一行只算还挂在记录上的步，删了就退。";
   secU.appendChild(note);
-  box.appendChild(secU);
-
-  const sec2 = document.createElement("div");
-  sec2.className = "sec";
-  sec2.innerHTML = "<h3>提示词</h3>";
-  for (const p of data.prompts) {
-    const det = document.createElement("details");
-    det.className = "pblock";
-    det.innerHTML = '<summary>' + esc(p.label) +
-      '<span class="meta">' + (p.override ? "已覆盖" : "默认") + " · " +
-      esc(p.file) + '</span></summary><div class="pbody">' +
-      '<div class="desc">' + esc(p.desc) + '</div>' +
-      '<textarea data-pkey="' + esc(p.key) + '">' + esc(p.text) + "</textarea>" +
-      '<div class="acts"><button data-psave="' + esc(p.key) + '">保存这份</button>' +
-      '<button data-preset="' + esc(p.key) + '">恢复默认</button></div></div>';
-    sec2.appendChild(det);
-  }
-  box.appendChild(sec2);
-
-  const sec3 = document.createElement("div");
-  sec3.className = "sec";
-  sec3.innerHTML = "<h3>改动记录</h3>";
-  if (!data.history || !data.history.length) {
-    const p = document.createElement("div");
-    p.className = "hint";
-    p.textContent = "还没有改过。";
-    sec3.appendChild(p);
-  }
-  for (const h of (data.history || []).slice(0, 30)) {
-    const row = document.createElement("div");
-    row.className = "hist";
-    row.innerHTML = "<span>" + esc(h.ts || "") + "</span><b>" +
-      esc(h.label || h.key) + "</b><span>" + esc(fmtVal(h.from)) + " → " +
-      esc(fmtVal(h.to)) + "</span>";
-    sec3.appendChild(row);
-  }
-  box.appendChild(sec3);
+  if (SET_GROUP === "成本") box.appendChild(secU);
 }
 async function openSettings() {
   toggleDrawer(false);

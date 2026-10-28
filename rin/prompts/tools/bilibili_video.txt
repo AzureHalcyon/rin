@@ -1,4 +1,0 @@
-取一条 bilibili 视频的完整元数据：标题、UP、发布时间、播放量、简介、分P、cid、链接。
-
-## bvid
-视频的 bvid，比如 BV1GJ411x7h7。从 bilibili_search 的结果里拿，别凭印象写。

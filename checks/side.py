@@ -202,6 +202,26 @@ def check_memory() -> None:
         blocked = plain.call("recall", json.dumps(
             {"keywords": ["词面"]}, ensure_ascii=False))
         check("查不到" in blocked, "词面关且无嵌入时应查不到：%s" % blocked)
+
+        # 新建前查重：名字很像就不建，候选里带着那一件的 id
+        first = bridge.call("remember", json.dumps(
+            {"name": "Ranchel 讲起名字 Rin 的由来", "note": "名字来自《Shelter》。"},
+            ensure_ascii=False))
+        check("已记" in first, "第一件该建起来：%s" % first)
+        before = len(bridge.graph.events)
+        second = bridge.call("remember", json.dumps(
+            {"name": "Ranchel 讲起名字 Rin 的来历", "note": "同一件事换个说法。"},
+            ensure_ascii=False))
+        check("很像" in second and "没新建" in second,
+              "名字很像时该拦下来：%s" % second)
+        check(len(bridge.graph.events) == before, "拦下来就不该多一件")
+        check("e-" in second, "候选里要给出那件的 id：%s" % second)
+
+        # 给 event 合并是另一条路，不能被查重挡住
+        merged = bridge.call("remember", json.dumps(
+            {"event": "Ranchel 讲起名字 Rin 的由来", "note": "补一句：那是他中学喜欢的歌。"},
+            ensure_ascii=False))
+        check("已更新" in merged, "给 event 时该改写那一件：%s" % merged)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -330,7 +350,7 @@ def check_web() -> None:
 
         # 「消息」那一页的数据：本机说的话不算外部来的，外部进件要带来源与状态
         post("/inbox", {"text": "外部的问候", "source": "QQ", "chat_type": "private",
-                        "chat_id": "2189761707", "chat_name": "她的人",
+                        "chat_id": "10001", "chat_name": "她的人",
                         "sender_name": "Azure"})
         _, box = get("/inbox?limit=50")
         check(any(row["text"] == "外部的问候" for row in box["items"]),
@@ -338,7 +358,7 @@ def check_web() -> None:
         check(box["counts"]["outside"] == 1, "外部来过几条要数对：%r" % box["counts"])
         check(box["counts"]["waiting"] >= 1, "还没读的条数要数对：%r" % box["counts"])
         checked = [row for row in box["items"] if row["text"] == "外部的问候"][0]
-        check(checked["source"] == "QQ" and checked["chat_id"] == "2189761707",
+        check(checked["source"] == "QQ" and checked["chat_id"] == "10001",
               "外部进件要带来源和会话：%r" % checked)
         web_row = [row for row in box["items"] if row["text"] == "在吗"][0]
         check(web_row["source"] == "网页" and web_row["direct"] == 1,
@@ -358,7 +378,7 @@ def check_web() -> None:
               % [row["ext_id"] for row in box["items"]])
         check("notified" in checked and "consumed" in checked,
               "仪表盘要能看出叫没叫过、读没读：%r" % checked)
-        check(any(row["chat_id"] == "2189761707" for row in box["channels"]),
+        check(any(row["chat_id"] == "10001" for row in box["channels"]),
               "会话清单里该有这个会话")
 
         # 每条连接用完要关掉库连接。以前它等垃圾回收才关：通道适配器一秒拉一次
@@ -392,7 +412,7 @@ def check_qq_bridge() -> None:
     def start(host: str, token: str):
         config = qq.Config(gateway="http://127.0.0.1:1", token="tok",
                            napcat="http://127.0.0.1:1", napcat_token=token,
-                           listen="127.0.0.1:0", allow_users=["2189761707"],
+                           listen="127.0.0.1:0", allow_users=["10001"],
                            allow_groups=[], group_mode="at")
         config.host = host                       # 只改判定用到的那个名字
         bridge = qq.Bridge(config)
@@ -415,8 +435,8 @@ def check_qq_bridge() -> None:
             return response.status
 
     event = {"post_type": "message", "message_type": "private",
-             "self_id": "3883115711", "user_id": "2189761707", "message_id": "m1",
-             "sender": {"user_id": "2189761707", "nickname": "Azure"},
+             "self_id": "10000", "user_id": "10001", "message_id": "m1",
+             "sender": {"user_id": "10001", "nickname": "Azure"},
              "message": [{"type": "text", "data": {"text": "hi rin"}}]}
 
     # ① 回环 + NapCat 没带令牌：放行（NapCat 各版本带令牌的方式不一样）
@@ -426,7 +446,7 @@ def check_qq_bridge() -> None:
         check(bridge.warned_auth, "放行过要记下来，别每次都说一遍")
         check(len(bridge.taken) == 1, "放行之后要真的收下这一条：%r" % bridge.taken)
         taken = bridge.taken[0] if bridge.taken else {}
-        check(taken.get("source") == "QQ" and taken.get("chat_id") == "2189761707",
+        check(taken.get("source") == "QQ" and taken.get("chat_id") == "10001",
               "收下的进件要带来源与会话：%r" % taken)
         check(taken.get("sender_name") == "Azure" and taken.get("text") == "hi rin",
               "收下的进件要带发言人和正文：%r" % taken)
@@ -456,7 +476,7 @@ def check_qq_bridge() -> None:
     # ③ 回发：只把「回给外部」的那几句发出去，按记录上的 via 定向
     config = qq.Config(gateway="http://127.0.0.1:1", token="tok",
                        napcat="http://127.0.0.1:1", napcat_token="",
-                       listen="127.0.0.1:0", allow_users=["2189761707"],
+                       listen="127.0.0.1:0", allow_users=["10001"],
                        allow_groups=["999"], group_mode="all")
     bridge = qq.Bridge(config)
     got = []
@@ -467,7 +487,7 @@ def check_qq_bridge() -> None:
         {"entries": [
             {"role": "assistant", "text": "回私聊的一句",
              "meta": {"via": {"source": "QQ", "chat_type": "private",
-                              "chat_id": "2189761707", "chat_name": "她的人"}}},
+                              "chat_id": "10001", "chat_name": "她的人"}}},
             {"role": "assistant", "text": "网页里聊的一句", "meta": {}},
             {"role": "assistant", "text": "回群里的一句",
              "meta": {"via": {"source": "QQ", "chat_type": "group",
@@ -482,7 +502,7 @@ def check_qq_bridge() -> None:
         bridge.pump_feed()
     finally:
         pass
-    check(got == [("回私聊的一句", "private", "2189761707"),
+    check(got == [("回私聊的一句", "private", "10001"),
                   ("回群里的一句", "group", "999")],
           "只该发回给叫醒她的那几个会话：%r" % got)
     check(bridge.cursor == {"block": 2, "seq": 305}, "游标要跟着走到最后一条")
@@ -496,15 +516,15 @@ def check_qq_bridge() -> None:
     pages = [
         {"entries": [{"role": "assistant", "text": "很久以前的一句",
                       "meta": {"via": {"source": "QQ", "chat_type": "private",
-                                       "chat_id": "2189761707"}}}],
+                                       "chat_id": "10001"}}}],
          "cursor": {"block": 1, "seq": 300}, "more": True},
         {"entries": [{"role": "assistant", "text": "更近的一句",
                       "meta": {"via": {"source": "QQ", "chat_type": "private",
-                                       "chat_id": "2189761707"}}}],
+                                       "chat_id": "10001"}}}],
          "cursor": {"block": 2, "seq": 5}, "more": False},
         {"entries": [{"role": "assistant", "text": "新的这一句",
                       "meta": {"via": {"source": "QQ", "chat_type": "private",
-                                       "chat_id": "2189761707"}}}],
+                                       "chat_id": "10001"}}}],
          "cursor": {"block": 2, "seq": 6}, "more": False},
     ]
     page_bridge.feed.get = lambda path: pages.pop(0)
@@ -517,7 +537,7 @@ def check_qq_bridge() -> None:
 
     # ④ 私聊的名字：备注优先（事件里只带昵称，备注要问好友列表），拿不到退昵称
     remark_bridge = qq.Bridge(config)
-    remark_bridge._load_friends = lambda: {"2189761707": "你给他起的备注"}
+    remark_bridge._load_friends = lambda: {"10001": "你给他起的备注"}
     named = remark_bridge.on_event(event)
     check(named and named["chat_name"] == "你给他起的备注",
           "私聊要先显示备注：%r" % (named and named.get("chat_name")))
@@ -569,17 +589,17 @@ def check_qq_bridge() -> None:
 
     qq._post_json = fake_post
     try:
-        ok = send_bridge.send_back("在呢", "private", "2189761707")
+        ok = send_bridge.send_back("在呢", "private", "10001")
     finally:
         qq._post_json = original_post
     check(ok is False, "被拒的发送不该当成功：%r" % ok)
-    check(sent and sent[0].get("user_id") == 2189761707,
+    check(sent and sent[0].get("user_id") == 10001,
           "发私聊要用 user_id：%r" % sent)
 
     qq._post_json = lambda url, payload, token="", timeout=15: {
         "status": "ok", "retcode": 0, "data": {"message_id": 1}}
     try:
-        check(send_bridge.send_back("在呢", "private", "2189761707") is True,
+        check(send_bridge.send_back("在呢", "private", "10001") is True,
               "发成功要报成功")
         check(send_bridge.send_back("在呢", "private", "不是号码") is False,
               "会话号不是数字要当场拒")
@@ -611,7 +631,7 @@ def check_qq_bridge() -> None:
     stuck.feed.get = lambda path: {"entries": [
         {"role": "assistant", "text": "没发出去的一句",
          "meta": {"via": {"source": "QQ", "chat_type": "private",
-                          "chat_id": "2189761707"}}}],
+                          "chat_id": "10001"}}}],
         "cursor": {"block": 9, "seq": 9}, "more": False}
     stuck.primed = True
     stuck.pump_feed()
@@ -642,14 +662,14 @@ def check_qq_bridge() -> None:
     group_bridge = qq.Bridge(group_cfg)
     group_bridge._group_name = lambda gid: "群甲"
     base = {"post_type": "message", "message_type": "group", "group_id": "999",
-            "self_id": "3883115711", "user_id": "2189761707",
-            "sender": {"user_id": "2189761707", "nickname": "Azure", "card": "甲"}}
+            "self_id": "10000", "user_id": "10001",
+            "sender": {"user_id": "10001", "nickname": "Azure", "card": "甲"}}
     plain = dict(base, message_id="g1",
                  message=[{"type": "text", "data": {"text": "随便聊聊"}}])
     item = group_bridge.on_event(plain)
     check(item and item.get("policy") == "", "没 @ 的群消息不传策略：%r" % item)
     at_msg = dict(base, message_id="g2",
-                  message=[{"type": "at", "data": {"qq": "3883115711"}},
+                  message=[{"type": "at", "data": {"qq": "10000"}},
                            {"type": "text", "data": {"text": " 叫她"}}])
     item = group_bridge.on_event(at_msg)
     check(item and item.get("policy") == "wake", "被 @ 的群消息要 wake：%r" % item)
@@ -659,11 +679,11 @@ def check_qq_bridge() -> None:
     taken = []
     catch_bridge.push_inbox = lambda item: (taken.append(item) or 9, True)
     history = {"data": {"messages": [
-        {"post_type": "message", "message_type": "private", "user_id": 2189761707,
-         "sender": {"user_id": 2189761707, "nickname": "Azure"}, "message_id": 11,
+        {"post_type": "message", "message_type": "private", "user_id": 10001,
+         "sender": {"user_id": 10001, "nickname": "Azure"}, "message_id": 11,
          "message": [{"type": "text", "data": {"text": "掉线时漏掉的一条"}}]},
         {"post_type": "message_sent", "message_type": "private",
-         "user_id": 3883115711, "sender": {"user_id": 3883115711}, "message_id": 12,
+         "user_id": 10000, "sender": {"user_id": 10000}, "message_id": 12,
          "message": [{"type": "text", "data": {"text": "她自己发的那句"}}]},
     ]}}
     qq._post_json = lambda url, payload, token="", timeout=15: history
@@ -678,21 +698,72 @@ def check_qq_bridge() -> None:
           "补进来的要带外部编号（去重靠它）：%r" % taken)
 
 
+def check_bili_tool() -> None:
+    """B 站也是"一个入口 + 动作"：help 给动作表，未知动作当场说清，不跑网络。"""
+    from rin.tools import bilibili as bili
+
+    check(bili.NAMES == ("bilibili",), "B 站只该有一个入口：%r" % (bili.NAMES,))
+    help_text = bili.call("bilibili", json.dumps({"action": "help"}))
+    for action in ("search", "video", "subtitles", "playurl", "transcript"):
+        check(action in help_text, "help 里该有 %s：%r" % (action, help_text[:80]))
+    check("keyword" in help_text and "bvid" in help_text, "help 里该有参数名")
+
+    empty = bili.call("bilibili", "{}")
+    check("search" in empty, "不给 action 就回动作表：%r" % empty[:60])
+
+    unknown = bili.call("bilibili", json.dumps({"action": "下载全部"}))
+    check("没有这个动作" in unknown, "未知动作要说清：%r" % unknown[:80])
+
+    bad = bili.call("bilibili", json.dumps({"action": "search", "params": "x"}))
+    check("params 要是一个对象" in bad, "params 不是对象要拒：%r" % bad)
+
+    tools = bili.tools()
+    check(len(tools) == 1 and tools[0]["function"]["name"] == "bilibili",
+          "工具面只该有一个 bilibili：%r" % [tool["function"]["name"] for tool in tools])
+
+
 def check_qq_tool() -> None:
-    """QQ 那个入口：清单写进工作区、按动作名调、不给的和未知的都当场说清楚。"""
+    """QQ 那个入口：渐进披露（先组、再展开一组）、按动作名调、不给的和未知的都拒。"""
     from rin.app import make_toolsets
     from rin.tools import qq as qq_tool
+    from rin.tools import qq_actions, workspace
 
     workdir = tempdir("loop-qq-")
     try:
         config = _loop_config(name="自检", data_dir=workdir, block_tokens=100000)
-        doc = qq_tool.write_doc(config)
-        check(os.path.isfile(doc), "动作清单要写进工作区：%r" % doc)
+        paths = qq_tool.write_docs(config)
+        doc = qq_tool.doc_path(config)
+        check(os.path.isfile(doc), "索引要写进工作区：%r" % doc)
+        check(len(paths) == len(qq_actions.CATALOG) + 1,
+              "索引 + 每组分一页：%d 个文件" % len(paths))
         with open(doc, encoding="utf-8") as handle:
+            index = handle.read()
+        check("send_private_msg" in index, "索引里该交代最常用的那几个")
+        check("set_group_ban" not in index, "索引**不许**把动作全铺开：该只有组名")
+        group_name = "群设置与成员处置"
+        group_file = os.path.join(workspace.root_of(config),
+                                  "QQ-动作", "%s.md" % group_name)
+        check(os.path.isfile(group_file), "分组页要落盘：%r" % group_file)
+        with open(group_file, encoding="utf-8") as handle:
             body = handle.read()
-        check("send_private_msg" in body and "get_group_list" in body,
-              "清单里该有常用动作：%r" % body[:80])
-        check("send_packet" in body, "不给的动作也要在清单里写明为什么")
+        check("set_group_ban" in body and "set_group_kick" in body,
+              "分组页里才是那一组的动作：%r" % body[:80])
+        check("get_group_list" not in body,
+              "只读的群信息不该和踢人禁言混在一组：%r" % body[:80])
+
+        # 工具面的第一层：index 只回组名与条数
+        first = qq_tool.call("qq", json.dumps({"action": "index"}), config)
+        check("组" in first and "send_private_msg" not in first.replace("最常用", ""),
+              "index 只该给组：%r" % first[:160])
+        # 第二层：help 展开一组
+        second = qq_tool.call("qq", json.dumps(
+            {"action": "help", "params": {"group": group_name}}), config)
+        check("set_group_ban" in second and "set_group_name" in second,
+              "help 要展开那一组：%r" % second[:120])
+        check("send_private_msg" not in second, "help 不该顺带别组：%r" % second[:120])
+        missing = qq_tool.call("qq", json.dumps(
+            {"action": "help", "params": {"group": "没有这组"}}), config)
+        check("没有这一组" in missing, "问不存在的组要说清楚：%r" % missing)
 
         # 工具面里要有它（说明文字登记过、schema 拼得出来）
         store = LoopStore(os.path.join(workdir, "loop.sqlite3"))
@@ -708,7 +779,7 @@ def check_qq_tool() -> None:
 
         got = {}
 
-        def fake_post(action, params):
+        def fake_post(action, params, config=None):
             got.update(action=action, params=params)
             return {"status": "ok", "retcode": 0, "data": {"user_id": 1}}
 
@@ -723,7 +794,7 @@ def check_qq_tool() -> None:
         check("get_friend_list" in out and "ok" in out, "结果要带动作与返回：%r" % out)
 
         called = []
-        qq_tool._post = lambda action, params: (
+        qq_tool._post = lambda action, params, config=None: (
             called.append(action) or {"status": "ok", "retcode": 0})
         try:
             blocked = qq_tool.call("qq", json.dumps({"action": "set_restart"}), config)
@@ -742,7 +813,7 @@ def check_qq_tool() -> None:
         check(called == ["send_private_msg"], "被拒的动作不该真的发出去：%r" % called)
 
         # retcode 不是 0 = 没做成：别把失败报成成功
-        qq_tool._post = lambda action, params: {"status": "failed", "retcode": 1400,
+        qq_tool._post = lambda action, params, config=None: {"status": "failed", "retcode": 1400,
                                                 "message": "账号已离线"}
         try:
             bad = qq_tool.call("qq", json.dumps(
@@ -797,8 +868,22 @@ def check_settings() -> None:
         for tool in prompt_files.tool_names():
             check(files.get(tool) == "tools/%s.txt" % tool,
                   "设置里该有 %s 那一份：%r" % (tool, files.get(tool)))
-        check(len(payload["prompts"]) == len(prompt_files.META),
-              "每份提示词都要出现在设置里")
+        check(len(payload["prompts"]) == len(prompt_files.META) + 1,
+              "提示词要齐全（多了她自己写的那段）：%d 份" % len(payload["prompts"]))
+
+        # 提示词自己一项，顺序照真实注入顺序：声音 → sink → 她写的 → 工具 → 按需
+        keys = [item["key"] for item in payload["prompts"]]
+        check("persona-written" in keys, "她自己写的那段也要列在提示词里")
+        check(keys.index("voice") < keys.index("sink") < keys.index("persona-written"),
+              "顺序要照注入顺序：%r" % keys[:4])
+        sections = [item["section"] for item in payload["prompts"]]
+        check(sections[:3] == ["常驻 System"] * 3,
+              "前三份都是常驻 system：%r" % sections[:4])
+        check("工具描述" in sections and "按需调用" in sections,
+              "提示词要按 system / 工具描述 / 按需调用 分段：%r" % sections)
+        check(payload["groups"][-2:] == ["提示词", "改动记录"]
+              and "QQ" in payload["groups"] and "B 站" in payload["groups"],
+              "提示词、改动记录、QQ、B 站各是一项：%r" % (payload["groups"],))
 
         fields = {item["key"]: item for item in payload["fields"]}
         check("embed_model" in fields and fields["embed_model"]["group"] == "记忆",
@@ -807,8 +892,27 @@ def check_settings() -> None:
         check(fields["model"].get("picker") == "chat", "主模型该能从列表挑")
         check(fields["summary_provider"]["type"] == "select", "摘要端点该是下拉")
         check(payload["memory"]["embed_dim"] > 0, "设置里该报嵌入维度")
+        check(fields["qq_token"].get("secret") and fields["bili_sessdata"].get("secret"),
+              "两个工具的凭据字段要标成 secret")
+        check(fields["qq_base"]["group"] == "QQ" and fields["bili_ffmpeg"]["group"] == "B 站",
+              "QQ 和 B 站各有自己那一组")
         check(call("/models?kind=chat")["ok"] is False,
               "没凭证时拉模型列表该老实说不行，而不是 500")
+
+        # 存完就生效：工具那边是每次调用现读的，不用重启
+        from rin.tools import bilibili as bili_tool
+        call("/settings", {"values": {"bili_ffmpeg": "/opt/bin/ffmpeg",
+                                      "bili_asr_model": "qwen3-asr-flash"}}, "PUT")
+        check(bili_tool._OVERRIDES.get("bili_ffmpeg") == "/opt/bin/ffmpeg",
+              "B 站的 ffmpeg 路径存完就该生效：%r" % bili_tool._OVERRIDES)
+        check(bili_tool._asr_model() == "qwen3-asr-flash", "转写模型也要跟着变")
+
+        # 她自己写的那段：设置里能改，存下去是 persona.md
+        call("/prompts", {"key": "persona-written", "text": "我改的这句"}, "PUT")
+        after = call("/settings")
+        row = [item for item in after["prompts"] if item["key"] == "persona-written"][0]
+        check(row["text"] == "我改的这句", "改完要读回来：%r" % row["text"])
+        check(row["resettable"] is False, "她写的那段不给「恢复默认」（清空是另一回事）")
 
         call("/settings", {"values": {"summary_provider": "bailian"}}, "PUT")
         check(config.summary_provider == "bailian", "下拉的值要能存")
