@@ -45,8 +45,8 @@ MAX_TRANSCRIPT_CHARS = 6000
 ASR_URL = os.environ.get(
     "ASR_URL",
     "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
-ASR_MODEL = os.environ.get("ASR_MODEL", "qwen3-asr-flash")
-ASR_CHUNK_SECONDS = 120          # 单段上限：qwen3-asr-flash 一次只收两分钟内的音频
+ASR_MODEL = os.environ.get("ASR_MODEL", "qwen-audio-3.1-asr-flash")
+ASR_CHUNK_SECONDS = 290          # 单段上限：这一族模型一次最多 300 秒，留 10 秒余量
 ASR_MAX_SECONDS = 1800           # 一次最多转 30 分钟，超了截断并说明
 FFMPEG = os.environ.get("FFMPEG", "ffmpeg")
 
@@ -508,6 +508,8 @@ def _asr_file(path: str, key: str) -> str:
         "model": ASR_MODEL,
         "input": {"messages": [{"role": "user", "content": [
             {"audio": "data:audio/mpeg;base64," + base64.b64encode(payload).decode()}]}]},
+        # qwen-audio-3.x 要显式给格式，否则 400 UNSUPPORTED_FORMAT: format is empty
+        "parameters": {"format": "mp3"},
     }
     request = urllib.request.Request(
         ASR_URL, data=json.dumps(body).encode("utf-8"),
@@ -524,6 +526,13 @@ def _asr_file(path: str, key: str) -> str:
 
 
 def _asr_text(raw: dict) -> str:
+    """两种返回结构都认：新的 `output.output.text`，旧的 `output.choices`。"""
+    inner = ((raw.get("output") or {}).get("output")) or {}
+    flat = str(inner.get("text") or "").strip()
+    if not flat:
+        flat = str(((inner.get("sentence") or {}).get("text")) or "").strip()
+    if flat:
+        return flat
     choices = (((raw.get("output") or {}).get("choices")) or [])
     if not choices:
         message = str((raw.get("output") or {}).get("message") or raw.get("message") or "")
