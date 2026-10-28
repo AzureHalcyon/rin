@@ -32,8 +32,8 @@ rin/
   settings.py          设置表与她那套旋钮
   memory_bridge.py     记忆工具面：参数 → 动词 → 一句话
   tool_texts.py        工具描述名单（权威）
-  tools/               shell / webtools / workspace / web_access / landlock
-  prompts/tools/       10 份工具描述（wait 的描述留在核心）
+  tools/               shell / webtools / workspace / web_access / landlock / bilibili
+  prompts/tools/       15 份工具描述（wait 的描述留在核心；含 B 站那 5 份）
 checks/                这一侧的自检（工具、网关、设置、措辞）
 deploy/                systemd 单元、部署与回滚、运维记录
 data/                  她的运行数据（不进版本控制）
@@ -47,6 +47,29 @@ data/                  她的运行数据（不进版本控制）
     python -m rin --name 名字 --data data --memory-data data/memory --http 127.0.0.1:8080
 
 `python -m rin --help` 是全部参数。凭证与数据目录都可以用参数改，默认见 `--help`。
+
+## B 站
+
+五个工具，走 B 站网页版公开接口（和 `dsh-bilibili` 插件的做法一致）：
+
+| 工具 | 干什么 |
+|---|---|
+| `bilibili_search` | 按关键词搜，返回 bvid、标题、UP、播放、时长 |
+| `bilibili_video` | 一条的完整元数据（简介、分P、cid、链接） |
+| `bilibili_subtitles` | 取字幕成片文字（**要登录 cookie**，很多轨匿名拿不到） |
+| `bilibili_playurl` | 单段 mp4 直链 |
+| `bilibili_transcript` | 没字幕时：下载 → ffmpeg 抽音轨 → 百炼 `qwen3-asr-flash` 转写 |
+
+三样东西要准备：
+
+- **cookie**：环境变量 `BILI_SESSDATA`，值是登录后的 SESSDATA（裸值，不带 `SESSDATA=`）。
+  有它字幕才拿得到；没有也能搜、能取直链，但字幕接口会回「账号未登录」。
+- **ffmpeg**：`bilibili_transcript` 用它抽 16k 单声道音轨、按 2 分钟切段。
+  装在 PATH 里就行，或者用 `FFMPEG` 指定绝对路径。
+- **转写**：用凭证里那组百炼的键（`ALIYUN_MAAS_API_KEY`），入口会填进 `ASR_KEY`；
+  地址与模型可用 `ASR_URL` / `ASR_MODEL` 覆盖。一次最多转 30 分钟，超了只给前半段。
+
+临时文件落在 `data/tmp/`（不进版本控制）。
 
 ## 自检
 

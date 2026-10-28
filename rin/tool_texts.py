@@ -47,6 +47,21 @@ TOOLS: Dict[str, Tuple[str, str, List[str]]] = {
     "write": ("工具 · write",
               "往工作区里写一个文件。",
               ["path", "content", "mode"]),
+    "bilibili_search": ("工具 · bilibili_search",
+                        "在 bilibili.com 搜视频，按关键词。",
+                        ["keyword", "page", "page_size", "order"]),
+    "bilibili_video": ("工具 · bilibili_video",
+                       "取一条 bilibili 视频的完整元数据。",
+                       ["bvid"]),
+    "bilibili_subtitles": ("工具 · bilibili_subtitles",
+                           "取一条 bilibili 视频的字幕（成片文字）。",
+                           ["bvid", "language"]),
+    "bilibili_playurl": ("工具 · bilibili_playurl",
+                         "拿一条 bilibili 视频的单段 mp4 直链。",
+                         ["bvid", "qn"]),
+    "bilibili_transcript": ("工具 · bilibili_transcript",
+                            "没有字幕时把视频的声音转成文字。",
+                            ["bvid"]),
 }
 
 

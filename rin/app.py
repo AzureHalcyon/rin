@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from loop.toolset import ModuleToolset
 
-from rin.tools import shell, webtools, workspace
+from rin.tools import bilibili, shell, webtools, workspace
 
 
 def register_prompts() -> None:
@@ -28,7 +28,8 @@ def register_prompts() -> None:
 
 
 def make_toolsets(config) -> list:
-    """她这一套工具：上网（fetch / search）、跑命令（run）、写工作区（write）。"""
+    """她这一套工具：上网（fetch / search）、跑命令（run）、写工作区（write）、B 站。"""
     return [ModuleToolset(webtools),
             ModuleToolset(shell, config),
-            ModuleToolset(workspace, config)]
+            ModuleToolset(workspace, config),
+            ModuleToolset(bilibili)]

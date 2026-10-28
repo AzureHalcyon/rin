@@ -136,6 +136,9 @@ def main(argv=None) -> int:
         return 1
 
     web_access.set_tavily_key(credentials.tavily_key)
+    # 语音转写用凭证里那组百炼的键（摘要/嵌入同一个端点），不另配一份。
+    if credentials.summary_key and not os.environ.get("ASR_KEY"):
+        os.environ["ASR_KEY"] = credentials.summary_key
     web_access.set_deepseek_key(credentials.chat_key)
 
     config = LoopConfig(name=args.name, model=args.model,
