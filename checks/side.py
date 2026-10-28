@@ -289,10 +289,15 @@ def check_web() -> None:
         check("data-theme" in page and 'id="theme"' in page, "页面里该有主题切换")
         check('id="picker"' in page, "页面里该有选模型的弹窗")
         check('id="mirror"' in page, "页面里该有量行数的镜像墙")
+        check('id="tab-msg"' in page and 'id="inboxview"' in page,
+              "页面里该有「消息」那一页（外部来信的仪表盘）")
 
         _, feed = get("/feed?since=0:0")
         check(any("在吗" in item["text"] for item in feed["entries"]),
               "流里该有刚说的话")
+        check(any(item["text"] == "在吗" for item in feed["entries"]),
+              "网页说的话原样进记录，不该盖来源前缀：%r"
+              % [item["text"] for item in feed["entries"]][:4])
         check(any(item["step"] >= 1 for item in feed["entries"]),
               "流里每条要带步号")
         check(feed["cursor"]["seq"] >= 1, "游标要往前走")
@@ -322,12 +327,355 @@ def check_web() -> None:
         cursor = "%d:%d" % (feed["cursor"]["block"], feed["cursor"]["seq"])
         _, more = get("/feed?since=" + cursor)
         check(more["entries"] == [], "游标之后不该重复给同一条")
+
+        # 「消息」那一页的数据：本机说的话不算外部来的，外部进件要带来源与状态
+        post("/inbox", {"text": "外部的问候", "source": "QQ", "chat_type": "private",
+                        "chat_id": "2189761707", "chat_name": "她的人",
+                        "sender_name": "Azure"})
+        _, box = get("/inbox?limit=50")
+        check(any(row["text"] == "外部的问候" for row in box["items"]),
+              "收件箱列表里该有外部那条：%r" % [row["text"] for row in box["items"]])
+        check(box["counts"]["outside"] == 1, "外部来过几条要数对：%r" % box["counts"])
+        check(box["counts"]["waiting"] >= 1, "还没读的条数要数对：%r" % box["counts"])
+        checked = [row for row in box["items"] if row["text"] == "外部的问候"][0]
+        check(checked["source"] == "QQ" and checked["chat_id"] == "2189761707",
+              "外部进件要带来源和会话：%r" % checked)
+        web_row = [row for row in box["items"] if row["text"] == "在吗"][0]
+        check(web_row["source"] == "网页" and web_row["direct"] == 1,
+              "网页说的要标成「网页」且算本机直投：%r" % web_row)
+        check(box["counts"]["outside"] == 1,
+              "本机直投不该算进「外部来过」：%r" % box["counts"])
+
+        # 同一个外部编号再推一次：认出来、不重复入库（补拉历史靠它去重）
+        post("/inbox", {"text": "补拉回来的一条", "source": "QQ", "ext_id": "m-1"})
+        _, again = post("/inbox", {"text": "补拉回来的一条", "source": "QQ",
+                                   "ext_id": "m-1"})
+        check(again.get("duplicate") is True,
+              "同一个 ext_id 再推要认出来：%r" % again)
+        _, box = get("/inbox?limit=100")
+        check(len([row for row in box["items"] if row["ext_id"] == "QQ:m-1"]) == 1,
+              "重复的只该存一条，编号带通道前缀：%r"
+              % [row["ext_id"] for row in box["items"]])
+        check("notified" in checked and "consumed" in checked,
+              "仪表盘要能看出叫没叫过、读没读：%r" % checked)
+        check(any(row["chat_id"] == "2189761707" for row in box["channels"]),
+              "会话清单里该有这个会话")
+
+        # 每条连接用完要关掉库连接。以前它等垃圾回收才关：通道适配器一秒拉一次
+        # /feed，一小时就能把 ulimit -n（1024）耗光，进程崩在 "Too many open files"。
+        if os.path.isdir("/proc/self/fd"):
+            def fds() -> int:
+                return len(os.listdir("/proc/self/fd"))
+            base = fds()
+            for _ in range(30):
+                get("/state")
+            grown = fds() - base
+            check(grown <= 5, "每条连接用完要关掉库连接，文件描述符不该越用越多"
+                              "（30 次请求涨了 %d 个）" % grown)
         store.close()
     finally:
         if httpd is not None:
             httpd.shutdown()
             httpd.server_close()
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def check_qq_bridge() -> None:
+    """QQ 通道：回环上的上报不带令牌也认；她说的话只回给叫醒她的那个会话。"""
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    from rin.qq import bridge as qq
+
+    def start(host: str, token: str):
+        config = qq.Config(gateway="http://127.0.0.1:1", token="tok",
+                           napcat="http://127.0.0.1:1", napcat_token=token,
+                           listen="127.0.0.1:0", allow_users=["2189761707"],
+                           allow_groups=[], group_mode="at")
+        config.host = host                       # 只改判定用到的那个名字
+        bridge = qq.Bridge(config)
+        bridge.taken = []
+        # 网关在测试里不存在：收下什么记在 bridge.taken 里，好核字段对不对
+        bridge.push_inbox = lambda item: (bridge.taken.append(item) or 7, True)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), qq.EventHandler)
+        httpd.bridge = bridge
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return bridge, httpd
+
+    def post(httpd, payload, token=""):
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d/onebot" % httpd.server_address[1],
+            data=json.dumps(payload).encode("utf-8"), method="POST")
+        request.add_header("Content-Type", "application/json")
+        if token:
+            request.add_header("Authorization", "Bearer " + token)
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status
+
+    event = {"post_type": "message", "message_type": "private",
+             "self_id": "3883115711", "user_id": "2189761707", "message_id": "m1",
+             "sender": {"user_id": "2189761707", "nickname": "Azure"},
+             "message": [{"type": "text", "data": {"text": "hi rin"}}]}
+
+    # ① 回环 + NapCat 没带令牌：放行（NapCat 各版本带令牌的方式不一样）
+    bridge, httpd = start("127.0.0.1", "secret")
+    try:
+        check(post(httpd, event) == 200, "回环上不带令牌的上报该放行")
+        check(bridge.warned_auth, "放行过要记下来，别每次都说一遍")
+        check(len(bridge.taken) == 1, "放行之后要真的收下这一条：%r" % bridge.taken)
+        taken = bridge.taken[0] if bridge.taken else {}
+        check(taken.get("source") == "QQ" and taken.get("chat_id") == "2189761707",
+              "收下的进件要带来源与会话：%r" % taken)
+        check(taken.get("sender_name") == "Azure" and taken.get("text") == "hi rin",
+              "收下的进件要带发言人和正文：%r" % taken)
+        try:
+            post(httpd, event, token="wrong-token")
+        except urllib.error.HTTPError as exc:
+            check(exc.code == 401, "带错令牌该 401，拿到 %d" % exc.code)
+        else:
+            raise AssertionError("带错令牌也放过去了")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    # ② 监听不在回环：没带令牌就拒（这条路本机以外能连进来）
+    _, httpd = start("0.0.0.0", "secret")
+    try:
+        try:
+            post(httpd, event)
+        except urllib.error.HTTPError as exc:
+            check(exc.code == 401, "对外监听时没带令牌该 401，拿到 %d" % exc.code)
+        else:
+            raise AssertionError("对外监听也放过去了")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    # ③ 回发：只把「回给外部」的那几句发出去，按记录上的 via 定向
+    config = qq.Config(gateway="http://127.0.0.1:1", token="tok",
+                       napcat="http://127.0.0.1:1", napcat_token="",
+                       listen="127.0.0.1:0", allow_users=["2189761707"],
+                       allow_groups=["999"], group_mode="all")
+    bridge = qq.Bridge(config)
+    got = []
+    bridge.send_back = lambda text, chat_type="private", chat_id="": got.append(
+        (text, chat_type, chat_id)) or True
+    feeds = [
+        {"entries": [], "cursor": {"block": 2, "seq": 301}},        # 首轮只对齐
+        {"entries": [
+            {"role": "assistant", "text": "回私聊的一句",
+             "meta": {"via": {"source": "QQ", "chat_type": "private",
+                              "chat_id": "2189761707", "chat_name": "她的人"}}},
+            {"role": "assistant", "text": "网页里聊的一句", "meta": {}},
+            {"role": "assistant", "text": "回群里的一句",
+             "meta": {"via": {"source": "QQ", "chat_type": "group",
+                              "chat_id": "999", "chat_name": "群甲"}}},
+            {"role": "user", "text": "别人说的", "meta": {}},
+        ], "cursor": {"block": 2, "seq": 305}},
+    ]
+    bridge.feed.get = lambda path: feeds.pop(0)
+    try:
+        bridge.pump_feed()
+        check(got == [], "首轮只对齐游标，历史不该重发：%r" % got)
+        bridge.pump_feed()
+    finally:
+        pass
+    check(got == [("回私聊的一句", "private", "2189761707"),
+                  ("回群里的一句", "group", "999")],
+          "只该发回给叫醒她的那几个会话：%r" % got)
+    check(bridge.cursor == {"block": 2, "seq": 305}, "游标要跟着走到最后一条")
+
+    # ③' 对齐游标要读完所有分页：/feed 一轮最多 300 条，只对一轮的话，
+    #     第二轮那些"旧记录"会被当成新话发出去（重启一次就把历史复述一遍）
+    page_bridge = qq.Bridge(config)
+    early = []
+    page_bridge.send_back = lambda text, chat_type="private", chat_id="": \
+        early.append(text) or True
+    pages = [
+        {"entries": [{"role": "assistant", "text": "很久以前的一句",
+                      "meta": {"via": {"source": "QQ", "chat_type": "private",
+                                       "chat_id": "2189761707"}}}],
+         "cursor": {"block": 1, "seq": 300}, "more": True},
+        {"entries": [{"role": "assistant", "text": "更近的一句",
+                      "meta": {"via": {"source": "QQ", "chat_type": "private",
+                                       "chat_id": "2189761707"}}}],
+         "cursor": {"block": 2, "seq": 5}, "more": False},
+        {"entries": [{"role": "assistant", "text": "新的这一句",
+                      "meta": {"via": {"source": "QQ", "chat_type": "private",
+                                       "chat_id": "2189761707"}}}],
+         "cursor": {"block": 2, "seq": 6}, "more": False},
+    ]
+    page_bridge.feed.get = lambda path: pages.pop(0)
+    page_bridge.pump_feed()
+    check(early == [], "对齐游标时一条历史都不该发：%r" % early)
+    check(page_bridge.primed and page_bridge.cursor == {"block": 2, "seq": 5},
+          "对齐要读到最后一页：%r" % (page_bridge.cursor,))
+    page_bridge.pump_feed()
+    check(early == ["新的这一句"], "对齐之后的新话才发：%r" % early)
+
+    # ④ 私聊的名字：备注优先（事件里只带昵称，备注要问好友列表），拿不到退昵称
+    remark_bridge = qq.Bridge(config)
+    remark_bridge._load_friends = lambda: {"2189761707": "你给他起的备注"}
+    named = remark_bridge.on_event(event)
+    check(named and named["chat_name"] == "你给他起的备注",
+          "私聊要先显示备注：%r" % (named and named.get("chat_name")))
+    check(named and named["sender_name"] == "你给他起的备注",
+          "发言人那栏也用备注：%r" % (named and named.get("sender_name")))
+    plain_bridge = qq.Bridge(config)
+    plain_bridge._load_friends = lambda: {}
+    plain = plain_bridge.on_event(event)
+    check(plain and plain["chat_name"] == "Azure",
+          "没备注就退昵称：%r" % (plain and plain.get("chat_name")))
+
+    # ⑤ 分块发送（有的客户端不写 Content-Length）：以前会读成 0 字节 —— 收下空事件、
+    #    当"不是消息"回 200，看起来一切正常，消息却没了。
+    import socket
+    chunk_bridge, chunk_httpd = start("127.0.0.1", "secret")
+    try:
+        body = json.dumps(event).encode("utf-8")
+        head = ("POST /onebot HTTP/1.1\r\nHost: x\r\n"
+                "Content-Type: application/json\r\n"
+                "Transfer-Encoding: chunked\r\n\r\n").encode()
+        payload = b""
+        for index in range(0, len(body), 40):
+            piece = body[index:index + 40]
+            payload += ("%x\r\n" % len(piece)).encode() + piece + b"\r\n"
+        payload += b"0\r\n\r\n"
+        sock = socket.create_connection(("127.0.0.1", chunk_httpd.server_address[1]),
+                                        timeout=5)
+        try:
+            sock.sendall(head + payload)
+            reply = sock.recv(4096)
+        finally:
+            sock.close()
+        check(b"200" in reply.split(b"\r\n")[0], "分块发送也要正常收：%r" % reply[:60])
+        check(len(chunk_bridge.taken) == 1,
+              "分块发送的正文要读全：%r" % chunk_bridge.taken)
+    finally:
+        chunk_httpd.shutdown()
+        chunk_httpd.server_close()
+
+    # ⑥ 发出去的话要核 NapCat 的返回：HTTP 200 但 retcode 非 0 = 没发出去
+    #    （2026-10-28 账号掉线时就是这样：她"回了"，可 QQ 上什么都没有）
+    sent = []
+    send_bridge = qq.Bridge(config)
+    original_post = qq._post_json
+
+    def fake_post(url, payload, token="", timeout=15):
+        sent.append(payload)
+        return {"status": "failed", "retcode": 1400, "message": "账号已离线"}
+
+    qq._post_json = fake_post
+    try:
+        ok = send_bridge.send_back("在呢", "private", "2189761707")
+    finally:
+        qq._post_json = original_post
+    check(ok is False, "被拒的发送不该当成功：%r" % ok)
+    check(sent and sent[0].get("user_id") == 2189761707,
+          "发私聊要用 user_id：%r" % sent)
+
+    qq._post_json = lambda url, payload, token="", timeout=15: {
+        "status": "ok", "retcode": 0, "data": {"message_id": 1}}
+    try:
+        check(send_bridge.send_back("在呢", "private", "2189761707") is True,
+              "发成功要报成功")
+        check(send_bridge.send_back("在呢", "private", "不是号码") is False,
+              "会话号不是数字要当场拒")
+    finally:
+        qq._post_json = original_post
+
+    # ⑦ 账号掉线要主动说：NapCat 掉线时不报错，只是"什么都没发生"
+    qq._post_json = lambda url, payload, token="", timeout=15: {
+        "status": "ok", "retcode": 0, "data": {"online": False, "good": False}}
+    try:
+        online_bridge = qq.Bridge(config)
+        check(online_bridge.check_online() is False, "掉线要认得出来")
+        check(online_bridge.online is False, "掉线状态要记住")
+        # 等扫码登录时 NapCat 的 HTTP 服务根本不在：问不到也要能判断出来
+        def boom(url, payload, token="", timeout=15):
+            raise OSError("Connection refused")
+        qq._post_json = boom
+        down_bridge = qq.Bridge(config)
+        for _ in range(3):
+            down_bridge.checks.clear()          # 每分钟问一次：这里当作三次间隔
+            down_bridge.check_online()
+        check(down_bridge.down == 3, "连续问不到要计数：%r" % down_bridge.down)
+    finally:
+        qq._post_json = original_post
+
+    # ⑨ 发不出去就别推游标：这一批下一轮还要重发，推了就永久丢
+    stuck = qq.Bridge(config)
+    stuck.send_back = lambda text, chat_type="private", chat_id="": False
+    stuck.feed.get = lambda path: {"entries": [
+        {"role": "assistant", "text": "没发出去的一句",
+         "meta": {"via": {"source": "QQ", "chat_type": "private",
+                          "chat_id": "2189761707"}}}],
+        "cursor": {"block": 9, "seq": 9}, "more": False}
+    stuck.primed = True
+    stuck.pump_feed()
+    check(stuck.cursor == {"block": 0, "seq": 0},
+          "发不出去就不该推游标：%r" % stuck.cursor)
+    check(stuck.send_failed == 1, "失败要记一笔（下一轮重试）：%r" % stuck.send_failed)
+
+    # ⑩ 推网关失败：回 5xx 让 NapCat 重发，而且不能记成"收过"
+    fail_bridge, fail_httpd = start("127.0.0.1", "")
+    try:
+        fail_bridge.push_inbox = lambda item: (0, False)
+        try:
+            post(fail_httpd, event)
+        except urllib.error.HTTPError as exc:
+            check(exc.code == 503, "网关没接住要回 5xx：%d" % exc.code)
+        else:
+            raise AssertionError("推失败还回 200，NapCat 就不会重发了")
+        check(not fail_bridge.known("m1"), "推失败不该记成收过（要能重放）")
+    finally:
+        fail_httpd.shutdown()
+        fail_httpd.server_close()
+
+    # 团体策略：被 @ 才明确 wake；没 @ 的不传策略（跟会话默认走，群默认 batch）
+    group_cfg = qq.Config(gateway="http://127.0.0.1:1", token="tok",
+                          napcat="http://127.0.0.1:1", napcat_token="",
+                          listen="127.0.0.1:0", allow_users=[],
+                          allow_groups=["999"], group_mode="all")
+    group_bridge = qq.Bridge(group_cfg)
+    group_bridge._group_name = lambda gid: "群甲"
+    base = {"post_type": "message", "message_type": "group", "group_id": "999",
+            "self_id": "3883115711", "user_id": "2189761707",
+            "sender": {"user_id": "2189761707", "nickname": "Azure", "card": "甲"}}
+    plain = dict(base, message_id="g1",
+                 message=[{"type": "text", "data": {"text": "随便聊聊"}}])
+    item = group_bridge.on_event(plain)
+    check(item and item.get("policy") == "", "没 @ 的群消息不传策略：%r" % item)
+    at_msg = dict(base, message_id="g2",
+                  message=[{"type": "at", "data": {"qq": "3883115711"}},
+                           {"type": "text", "data": {"text": " 叫她"}}])
+    item = group_bridge.on_event(at_msg)
+    check(item and item.get("policy") == "wake", "被 @ 的群消息要 wake：%r" % item)
+
+    # ⑧ 对账补拉：掉线那段时间进来的消息 QQ 不会重新推事件，只能自己问历史
+    catch_bridge = qq.Bridge(config)
+    taken = []
+    catch_bridge.push_inbox = lambda item: (taken.append(item) or 9, True)
+    history = {"data": {"messages": [
+        {"post_type": "message", "message_type": "private", "user_id": 2189761707,
+         "sender": {"user_id": 2189761707, "nickname": "Azure"}, "message_id": 11,
+         "message": [{"type": "text", "data": {"text": "掉线时漏掉的一条"}}]},
+        {"post_type": "message_sent", "message_type": "private",
+         "user_id": 3883115711, "sender": {"user_id": 3883115711}, "message_id": 12,
+         "message": [{"type": "text", "data": {"text": "她自己发的那句"}}]},
+    ]}}
+    qq._post_json = lambda url, payload, token="", timeout=15: history
+    try:
+        added = catch_bridge.catch_up()
+    finally:
+        qq._post_json = original_post
+    check(added == 1, "对账该补上一条：%r" % added)
+    check(len(taken) == 1 and taken[0]["text"] == "掉线时漏掉的一条",
+          "对账只补对方发来的消息：%r" % taken)
+    check(taken and taken[0].get("ext_id") == "11",
+          "补进来的要带外部编号（去重靠它）：%r" % taken)
 
 
 def check_settings() -> None:
@@ -457,6 +805,17 @@ def check_settings() -> None:
         check(prompt_files.text("sink") == "我是测试。", "改提示词该立刻生效")
         call("/prompts", {"key": "sink", "text": ""}, "PUT")
         check("$wait" in prompt_files.text("sink"), "清空该回到默认")
+
+        # 会话与策略：推一条带来源的进件 → 出现在 /channels → 改策略生效
+        call("/inbox", {"source": "外部", "chat_type": "group", "chat_id": "g1",
+                        "chat_name": "群甲", "sender_name": "甲", "text": "在吗"}, "POST")
+        rows = call("/channels")["channels"]
+        check(any(row["chat_id"] == "g1" and row["unread"] == 1 for row in rows),
+              "会话清单该有这一条：%r" % rows)
+        changed = call("/channels", {"chat_id": "g1", "policy": "batch"}, "PUT")
+        check(changed["changed"] >= 1, "改策略要影响未读的那条：%r" % changed)
+        after = {row["chat_id"]: row["policy"] for row in call("/channels")["channels"]}
+        check(after.get("g1") == "batch", "策略要落库：%r" % after)
 
         call("/restart", {}, "POST")
         check(control.stop_requested(), "重启是给循环一个停止请求")

@@ -1,0 +1,20 @@
+[Unit]
+Description=rin QQ 通道（OneBot 11 → 收件箱）
+After=network-online.target palimpsest.service
+Wants=network-online.target palimpsest.service
+
+[Service]
+Type=simple
+User=palimpsest
+Group=palimpsest
+WorkingDirectory=/opt/rin
+EnvironmentFile=/etc/palimpsest/qq.env
+Environment=PYTHONUNBUFFERED=1
+# 与主服务同一套铺法：两个仓的目录都在 PYTHONPATH 上，不装进站点包。
+Environment=PYTHONPATH=/opt/palimpsest:/opt/rin
+ExecStart=/opt/palimpsest/.venv/bin/python -m rin.qq --gateway http://127.0.0.1:8080 --token ${RIN_TOKEN} --napcat http://127.0.0.1:3000 --napcat-token ${NAPCAT_TOKEN} --listen ${QQ_LISTEN} --allow-users ${QQ_USERS} --allow-groups ${QQ_GROUPS} --group-mode ${QQ_GROUP_MODE}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

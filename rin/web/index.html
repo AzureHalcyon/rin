@@ -286,6 +286,41 @@ details.frow>summary:hover{color:var(--fg2)}
   color:var(--dim);border-radius:8px;padding:4px 11px;font:12px var(--sans);cursor:pointer}
 #graphview .ghead button:hover{color:var(--fg);border-color:var(--line3)}
 #graphview iframe{flex:1;width:100%;border:0;background:#0a0d13}
+/* 消息：外部进来过的每一条都在这一页上——谁说的、她看没看、回给了谁，一眼对得上 */
+#inboxview{position:fixed;inset:0;background:var(--bg);z-index:9;display:none;
+  flex-direction:column}
+#inboxview.open{display:flex}
+#inboxview .ghead{display:flex;align-items:center;gap:10px;padding:10px 16px;
+  border-bottom:1px solid var(--line);font-size:13px}
+#inboxview .ghead button{background:transparent;border:1px solid var(--line2);
+  color:var(--dim);border-radius:8px;padding:4px 11px;font:12px var(--sans);cursor:pointer}
+#inboxview .ghead button:hover{color:var(--fg);border-color:var(--line3)}
+#inboxview .ibody{flex:1;overflow-y:auto;padding:14px 16px 34px}
+#inboxview .isinner{max-width:880px;margin:0 auto}
+#inboxview h4{font-size:11px;font-weight:600;color:var(--ghost);margin:16px 0 7px;
+  letter-spacing:.05em}
+#inboxview h4:first-child{margin-top:0}
+.ichn{display:flex;gap:10px;align-items:baseline;border:1px solid var(--line);
+  border-radius:9px;background:var(--raise);padding:7px 12px;margin:6px 0;font-size:12.5px}
+.ichn .nm{color:var(--fg);min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.ichn .meta{margin-left:auto;color:var(--ghost);font-family:var(--mono);
+  font-size:11px;white-space:nowrap}
+.imsg{display:flex;gap:10px;align-items:baseline;border-bottom:1px dashed var(--line);
+  padding:7px 2px;font-size:12.5px}
+.imsg:last-child{border-bottom:0}
+.imsg .tm{flex:none;color:var(--ghost);font-family:var(--mono);font-size:10.5px;
+  white-space:nowrap}
+.imsg .who{flex:0 1 auto;color:var(--fg2);font-family:var(--mono);font-size:11px;
+  max-width:34%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.imsg .tx{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;color:var(--dim)}
+.imsg .st{flex:none;font-size:10.5px;border:1px solid var(--line2);border-radius:20px;
+  padding:1px 8px;color:var(--ghost)}
+.imsg.wait .st{color:var(--warn);border-color:currentColor}
+.imsg.gone .tx,.imsg.gone .who{opacity:.55}
+.tovia{margin-top:3px;font-size:10.5px;color:var(--ghost);font-family:var(--mono)}
+#inboxview .perr{color:var(--warn);font-size:12px;padding:8px 2px;font-family:var(--mono)}
+#inboxview .perr.quiet{color:var(--ghost)}
 #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
   background:var(--field);border:1px solid var(--line2);color:var(--fg);
   padding:8px 16px;border-radius:10px;font-size:12.5px;opacity:0;pointer-events:none;
@@ -412,7 +447,7 @@ details.sub .sb{padding:4px 0 2px 8px;border-left:2px solid var(--line);
 
 <div id="main">
   <div id="top">
-    <div class="tabs"><span class="on" id="tab-chat">对话</span><span id="tab-ctx">上下文</span><span id="tab-graph">图</span><span id="tab-set">设置</span></div>
+    <div class="tabs"><span class="on" id="tab-chat">对话</span><span id="tab-msg">消息</span><span id="tab-ctx">上下文</span><span id="tab-graph">图</span><span id="tab-set">设置</span></div>
     <div class="right">
       <span class="pill"><span class="dot" id="h-dot"></span> <span id="h-status">—</span></span>
       <span class="pill" id="h-detail"></span>
@@ -479,6 +514,15 @@ details.sub .sb{padding:4px 0 2px 8px;border-left:2px solid var(--line);
   </div>
   <iframe id="g-frame" title="事件图"></iframe>
 </div>
+<div id="inboxview">
+  <div class="ghead">
+    <b>消息</b><span id="i-sub" style="color:var(--faint);font-size:11.5px"></span>
+    <span style="flex:1"></span>
+    <button id="i-reload">刷新</button>
+    <button id="i-close">收起</button>
+  </div>
+  <div class="ibody"><div class="isinner" id="i-body"></div></div>
+</div>
 <div id="toast"></div>
 <div id="login"><div class="box">
   <div style="font-weight:600">需要令牌</div>
@@ -493,6 +537,7 @@ details.sub .sb{padding:4px 0 2px 8px;border-left:2px solid var(--line);
 const $ = (id) => document.getElementById(id);
 const S = {token: localStorage.getItem("palimpsest.token") || "",
   since: "0:0", step: 0, lastStep: -1, pinned: true, sending: false, models: null,
+  polling: false,
   usage: new Map(), calls: new Map(), ctxAt: 0, cache: null, statusKind: ""};
 
 const esc = (s) => String(s == null ? "" : s)
@@ -621,8 +666,13 @@ function delBtn(item) {
 function addEntry(item) {
   const e = $("empty"); if (e) e.remove();
   const box = $("thread");
-  let w = box.lastElementChild;
-  if (!w || !w.classList.contains("wrap")) { w = wrap(); box.appendChild(w); }
+  // 找最后一个 .wrap 复用：草稿气泡（#draft）每轮都被移到末尾，
+  // 直接拿 lastElementChild 就会每轮新开一个 wrap，删除时还会在对话中间插「还没有记录」。
+  let w = null;
+  for (let i = box.children.length - 1; i >= 0; i -= 1) {
+    if (box.children[i].classList.contains("wrap")) { w = box.children[i]; break; }
+  }
+  if (!w) { w = wrap(); box.appendChild(w); }
 
   // 只有「真说了话」或「对方说话」的步才画分割线。纯工具步（一步一个 remember）
   // 并进上一条，不然一串工具调用会把界面撑成一堆「第 N 步」。
@@ -689,7 +739,20 @@ function addEntry(item) {
     if (item.text) {
       const row = document.createElement("div");
       row.className = "row assistant";
-      row.innerHTML = '<div class="body">' + esc(item.text) + "</div>";
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = item.text;
+      // 这句话是回给谁的：外部叫醒她那几轮，她说的话会定向发回去（见 meta.via）
+      const via = item.meta && item.meta.via;
+      if (via) {
+        const tag = document.createElement("div");
+        tag.className = "tovia";
+        tag.textContent = "→ 已发到 " + (via.source || "外部") + " · " +
+          (via.chat_type === "group" ? "群" : "私聊") + "「" +
+          (via.chat_name || via.chat_id || "?") + "」";
+        body.appendChild(tag);
+      }
+      row.appendChild(body);
       host.appendChild(row);
     }
   }
@@ -727,6 +790,7 @@ function renderContext(c) {
     $("d-sub").textContent = "整次请求 " + k(c.context_tokens);
     return;
   }
+  const first = !S.ctxSig;      // 这一轮之前画过没有（要在赋值前记下来）
   S.ctxSig = sig;
   // 抽屉每 2.5 秒重画一次：先把哪些块是展开的、滚到哪儿记下来，画完再恢复，
   // 否则点开「系统提示」几秒后自己就收起来了。
@@ -748,7 +812,6 @@ function renderContext(c) {
     }
   });
   const scroll = box.scrollTop;
-  const firstPaint = !S.ctxSig;
   box.innerHTML = "";
   $("d-sub").textContent = "整次请求 " + k(c.context_tokens);
 
@@ -939,7 +1002,7 @@ function renderContext(c) {
       body.scrollTop = before.top;                   // 在读旧的：原地不动
     }
   });
-  if (firstPaint) {
+  if (first) {
     // 第一次画（或刚打开抽屉）：直接落到「当前块（在写）」的末尾——那儿才是最新的
     const target = currentSec.querySelector("details");
     box.scrollTop = target
@@ -1017,6 +1080,10 @@ function paint(st) {
 }
 
 async function poll() {
+  // 同一时刻只跑一轮：send() / 换模型 / 登录都会顺手再调一次，
+  // 两轮拿同一批 /feed 各自 addEntry 一遍，页面上就会出现重复的那句话。
+  if (S.polling) return;
+  S.polling = true;
   try {
     const [feed, st] = await Promise.all([
       api("/feed?since=" + encodeURIComponent(S.since) + "&step=" + S.step),
@@ -1033,7 +1100,9 @@ async function poll() {
       S.ctxAt = Date.now();
       renderContext(await api("/context"));
     }
+    if (INBOX.open && Date.now() - INBOX.at > 1500) paintInbox();
   } catch (e) { }
+  finally { S.polling = false; }
 }
 
 /* ── 发送 ─────────────────────────────────────────────────────────────── */
@@ -1150,6 +1219,127 @@ async function openGraph() {
 $("tab-graph").onclick = openGraph;
 $("g-close").onclick = () => $("graphview").classList.remove("open");
 $("g-reload").onclick = openGraph;
+
+/* ── 消息（外部来信） ─────────────────────────────────────────────────────
+   她自己只看得见「没读的正文」；这一页是给人看的账：谁什么时候说了什么，
+   哪条还在等她、哪条已经并进记录了。策略也在这一页上能改。 */
+const INBOX = {open: false, at: 0};
+const POLICY = {wake: "叫醒", batch: "攒着", mute: "不叫她"};
+
+function chatLabel(it) {
+  // 来源照实写（网页 / 命令行 / QQ / 以后接的别的通道）；有会话的才带「私聊/群「谁」」
+  const source = it.source || "未知来源";
+  if (!it.chat_id) return source;
+  const name = it.chat_name || it.chat_id;
+  const kind = it.chat_type === "group" ? "群" : "私聊";
+  return source + " · " + kind + "「" + name + "」";
+}
+
+function inboxState(it) {
+  if (it.consumed) return {cls: "gone", text: "已并进记录"};
+  if (it.notified) return {cls: "wait", text: "叫过了，还没取"};
+  return {cls: "", text: it.policy === "mute" ? "藏着" : "攒着"};
+}
+
+async function openInbox() {
+  INBOX.open = true;
+  $("inboxview").classList.add("open");
+  $("i-body").innerHTML = '<div class="perr quiet">载入中…</div>';
+  await paintInbox();
+}
+
+async function paintInbox() {
+  let data;
+  // 正在动的控件（比如展开的策略下拉）不能被打断：每轮全量重建会把它销毁，
+  // 手刚放下拉就没了。
+  const focus = document.activeElement;
+  if (focus && $("i-body").contains(focus) && focus.tagName === "SELECT") {
+    INBOX.at = Date.now();
+    return;
+  }
+  INBOX.at = Date.now();
+  try { data = await api("/inbox?limit=120"); }
+  catch (e) { $("i-sub").textContent = "拉不到：" + e.message; return; }
+  const items = data.items || [], chats = data.channels || [], counts = data.counts || {};
+  $("i-sub").textContent = (counts.waiting || 0) + " 条还没读 · 外部一共来过 " +
+    (counts.outside || 0) + " 条";
+
+  const box = $("i-body");
+  const scroll = box.scrollTop;
+  box.innerHTML = "";
+
+  box.appendChild(Object.assign(document.createElement("h4"),
+    {textContent: "会话（策略在设置里也能改）"}));
+  if (!chats.length) {
+    box.appendChild(Object.assign(document.createElement("div"),
+      {className: "perr quiet", textContent: "还没有任何会话来过。"}));
+  }
+  for (const c of chats) {
+    const row = document.createElement("div");
+    row.className = "ichn";
+    const sel = document.createElement("select");
+    sel.style.cssText = "background:var(--field);color:var(--fg2);border:1px solid var(--line2);" +
+      "border-radius:7px;padding:2px 6px;font:11.5px var(--sans)";
+    for (const key of ["wake", "batch", "mute"]) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = POLICY[key];
+      if ((c.policy || "wake") === key) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.onchange = async () => {
+      try {
+        await api("/channels", {method: "PUT",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({chat_id: c.chat_id, policy: sel.value})});
+        toast("「" + (c.chat_name || c.chat_id) + "」改成" + POLICY[sel.value]);
+        paintInbox();
+      } catch (e) { toast("改不了：" + e.message); }
+    };
+    const nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = chatLabel(c);
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = (c.unread ? c.unread + " 条没读" : "都读过了");
+    row.append(nm, meta, sel);
+    box.appendChild(row);
+  }
+
+  box.appendChild(Object.assign(document.createElement("h4"),
+    {textContent: "最近的来信"}));
+  if (!items.length) {
+    box.appendChild(Object.assign(document.createElement("div"),
+      {className: "perr quiet", textContent: "还没有外部消息。"}));
+  }
+  for (const it of items.slice().reverse()) {
+    const st = inboxState(it);
+    const row = document.createElement("div");
+    row.className = "imsg " + st.cls;
+    const tm = document.createElement("span");
+    tm.className = "tm";
+    tm.textContent = hhmmss(it.ts);
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = it.sender_name ? (it.sender_name + " @ " + chatLabel(it)) : chatLabel(it);
+    const tx = document.createElement("span");
+    tx.className = "tx";
+    tx.textContent = it.text;
+    const chip = document.createElement("span");
+    chip.className = "st";
+    chip.textContent = st.text;
+    row.append(tm, who, tx, chip);
+    box.appendChild(row);
+  }
+  box.scrollTop = scroll;
+}
+
+$("tab-msg").onclick = openInbox;
+$("i-close").onclick = () => {
+  INBOX.open = false;
+  $("inboxview").classList.remove("open");
+};
+$("i-reload").onclick = () => paintInbox();
 $("scrim").onclick = () => toggleDrawer(false);
 $("into").onclick = () => {
   S.token = $("token").value.trim();
@@ -1303,6 +1493,54 @@ function fieldRow(f, value, def, pending) {
   return row;
 }
 
+async function loadChannels(box) {
+  let rows = [];
+  try {
+    rows = (await api("/channels")).channels || [];
+  } catch (e) {
+    box.textContent = "拿不到会话清单：" + e.message;
+    return;
+  }
+  box.className = "";
+  box.innerHTML = "";
+  if (!rows.length) {
+    box.textContent = "还没有通道往里推过消息。";
+    return;
+  }
+  const labels = { wake: "叫醒", batch: "攒着", mute: "不提示" };
+  for (const row of rows) {
+    const line = document.createElement("div");
+    line.className = "hist";
+    const kind = row.chat_type === "group" ? "群" : "私聊";
+    const span = document.createElement("span");
+    span.textContent = (row.source || "外部") + " · " + kind + "「" +
+      (row.chat_name || row.chat_id) + "」 · 未读 " + (row.unread || 0);
+    const sel = document.createElement("select");
+    for (const p of ["wake", "batch", "mute"]) {
+      const opt = document.createElement("option");
+      opt.value = p;
+      opt.textContent = labels[p];
+      if (p === (row.policy || "wake")) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.onchange = async () => {
+      try {
+        await api("/channels", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: row.chat_id, policy: sel.value }),
+        });
+      } catch (e) {
+        alert("改策略失败：" + e.message);
+      }
+      loadChannels(box);
+    };
+    line.appendChild(span);
+    line.appendChild(sel);
+    box.appendChild(line);
+  }
+}
+
 function renderSettings(data) {
   SET_DATA = data;
   SET_FIELDS = data.fields;
@@ -1359,6 +1597,18 @@ function renderSettings(data) {
     sec1.appendChild(line);
   }
   box.appendChild(sec1);
+
+  /* 会话与策略：哪个通道、哪个会话、攒了多少、要不要叫醒她。
+     列表是异步拿的（要读库），所以先放个占位再填。 */
+  const secC = document.createElement("div");
+  secC.className = "sec";
+  secC.innerHTML = "<h3>会话与策略</h3>";
+  const cbox = document.createElement("div");
+  cbox.className = "hint";
+  cbox.textContent = "读一点…";
+  secC.appendChild(cbox);
+  box.appendChild(secC);
+  loadChannels(cbox);
 
   /* 真账：`usage` 表全部。它不随删记录退（钱已经花了），所以和输入框下面那行
      分开摆——那里只算还挂在记录上的步。 */

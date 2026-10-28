@@ -29,6 +29,79 @@ systemd 用 `PYTHONPATH` 把两个目录都指上，改代码只要重传再重�
 `loop.env` 末尾**要有换行**再追加新键，否则会和上一行拼成一行（`LOOP_HTTP=...BILI_SESSDATA=...`），
 服务起来时 `--http` 拿到一个坏地址。
 
+## 接 QQ（NapCat + 本仓的适配器）
+
+三样东西：NapCat（协议端，Docker）、本仓的 `rin.qq`（适配器）、网关的 `/inbox`（已有）。
+
+1. **起 NapCat**（host 网络，端口在 WebUI 里只绑 127.0.0.1，别改）：
+
+       sudo mkdir -p /opt/napcat && cd /opt/napcat
+       sudo cp /opt/rin/deploy/napcat.compose.yaml ./compose.yaml
+       printf 'WEBUI_TOKEN=自己定一串\nACCOUNT=机器人QQ号\n' | sudo tee .env >/dev/null
+       sudo docker compose up -d
+       sudo docker compose logs --tail 20      # 看到登录二维码/提示就成了
+
+   `ACCOUNT` 填上之后，重启容器走**快速登录**，不用每次扫码。
+   用 `network_mode: host` 是因为容器里的 127.0.0.1 得是这台机器的 127.0.0.1——
+   它要往适配器推事件，适配器也要连它的 HTTP 服务端；容器网络下两边都连不通。
+
+2. **扫码登录**：SSH 隧道把 6099 转到本机，打开
+   `http://127.0.0.1:6099/webui?token=<WEBUI_TOKEN>`，用**小号**扫。登完它会要求你改一次密码。
+
+3. **配两条通道**（WebUI → 网络配置 → 新建）：
+
+   | 方向 | 地址 | 用途 |
+   |---|---|---|
+   | HTTP 客户端（`httpClients`） | `http://127.0.0.1:8098/onebot` | 事件推给适配器 |
+   | HTTP 服务端（`httpServers`） | 监听 `127.0.0.1:3000` | 适配器用它发消息 |
+
+   两边都要填 **token**，值就是下面 `qq.env` 里的 `NAPCAT_TOKEN`。
+   适配器对**进来的**上报宽松一档：它只监听 `127.0.0.1`，所以 NapCat 没带令牌也放行
+   （各版本带法不同，`NapCat` 有些版本干脆不带）；带了但不对仍然 401，日志里会写清。
+   出去的调用（发消息、拉群名）一定带令牌，值不对 NapCat 直接拒。
+
+4. **起适配器**：
+
+       sudo cp /opt/rin/deploy/qq.env.example /etc/palimpsest/qq.env
+       sudo chmod 600 /etc/palimpsest/qq.env      # 填 RIN_TOKEN / NAPCAT_TOKEN / QQ_USERS
+       sudo cp /opt/rin/deploy/qq.service /etc/systemd/system/qq.service
+       sudo systemctl daemon-reload && sudo systemctl enable --now qq
+       sudo journalctl -u qq -n 20 --no-pager
+
+5. **核对**：用白名单里的号给小号发一句；网页「消息」页上应出现这条（来源 QQ、
+   状态「叫过了，还没取」），她的记录里出现一行「还有 1 条没看的消息…」，
+   调 `messages` 能看到 `外部 · 私聊「…」 某人：…`；她回话会发回那个会话。
+   回发是照记录上的 `meta.via` 定向的：网页里跟她聊的话不会被复述到 QQ 上。
+
+`RIN_TOKEN` 就是 `/opt/rin/data/web-token` 的内容（网关的 Bearer 令牌）。
+
+### 掉线了怎么办
+
+QQ 账号会被腾讯踢下线（日志里是 `[KickedOffLine] 你的账号当前登录已失效`）。
+**掉线时 NapCat 不报错，只是再也不会有事件进来**——所以适配器每分钟问一次
+`get_status`，不在线就明说一行：
+
+```
+[qq] 账号不在线：消息进不来。docker restart napcat 会重新快速登录，
+     它要是还要二维码，就得扫码了
+```
+
+处理顺序：
+
+    sudo docker restart napcat          # 会话还有效时，-q $ACCOUNT 直接快速登录
+    sudo docker logs napcat --tail 20   # 还要二维码的话，日志里会给二维码路径
+
+要扫码时把图取出来（容器里的 `/app/napcat/cache/qrcode.png` 每次刷新都会重写）：
+
+    sudo docker cp napcat:/app/napcat/cache/qrcode.png /tmp/qr.png
+    # 再从本机 scp /tmp/qr.png 出来，用手Q扫
+    curl -s -X POST -H "Authorization: Bearer $NAPCAT_TOKEN" -H 'Content-Type: application/json' \
+         -d '{}' http://127.0.0.1:3000/get_login_info     # 扫完核对
+
+她那边不用重启：进件表是同一个，扫码上线之后到的消息照常叫醒她。
+她在掉线期间"说"过的话（`meta.via` 指向 QQ）不会补发——发不出去就是发不出去，
+重连之后不会把旧话翻出来重发（对齐游标时一条历史都不发）。
+
 ## 从单仓切过来（第一次）
 
 前提：旧版本（单仓、`-m loop`）在跑，`/opt/palimpsest/data` 是她现在的全部运行数据。

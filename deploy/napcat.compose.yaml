@@ -1,0 +1,22 @@
+# NapCat：QQ 协议端。用它自己的 host 网络，端口只绑 127.0.0.1（在 WebUI 里配）。
+#
+# 起之前在同目录放一个 .env：
+#   WEBUI_TOKEN=随手一串
+# ACCOUNT 填机器人的 QQ 号：带上它，重启容器走快速登录，不用再扫码。
+# 起来后 WebUI 在 http://127.0.0.1:6099/webui?token=<WEBUI_TOKEN>（走 SSH 隧道看）。
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: unless-stopped
+    # host 网络：容器里的 127.0.0.1 才是这台机器的 127.0.0.1，
+    # 否则 NapCat 连不到适配器，适配器也连不到它的 HTTP 服务端。
+    network_mode: host
+    environment:
+      MODE: ws
+      ACCOUNT: ${ACCOUNT:-}
+      WEBUI_TOKEN: ${WEBUI_TOKEN:?请在 .env 里设 WEBUI_TOKEN}
+    volumes:
+      - ./data/qq:/app/.config/QQ
+      - ./data/config:/app/napcat/config
+      - ./data/plugins:/app/napcat/plugins

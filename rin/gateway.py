@@ -99,6 +99,26 @@ class _Handler(BaseHTTPRequestHandler):
             # 浏览器关页、刷新、点走：这条连接已经没了，没什么可做的。
             return
 
+    def finish(self):
+        """一条连接用完就把这条线程的库连接关掉。
+
+        ThreadingHTTPServer 每条连接一个线程，而每个线程都开一条 SQLite 连接；
+        连接对象要等垃圾回收才关文件描述符。通道适配器一秒拉一次 /feed，
+        一小时就能把 `ulimit -n`（1024）耗光，然后进程崩在
+        "Too many open files: 'data/edits'" —— 2026-10-28 就这么崩过。
+        """
+        try:
+            super().finish()
+        finally:
+            store = getattr(_local, "store", None)
+            _local.store = None
+            _local.path = ""
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:      # 关不掉也别让连接收尾报错
+                    pass
+
     def _authorized(self) -> bool:
         token = str(self.server.token or "")
         if not token:
@@ -136,6 +156,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send(200, self._context())
             if route.path == "/settings":
                 return self._send(200, self._settings_payload())
+            if route.path == "/channels":
+                return self._send(200, {"channels": _store_of(self.server).channels()})
+            if route.path == "/inbox":
+                return self._send(200, self._inbox_view(parse_qs(route.query)))
             if route.path == "/models":
                 return self._send(200, self._models(parse_qs(route.query)))
             if route.path == "/feed":
@@ -193,6 +217,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._save_settings()
             if route.path == "/prompts":
                 return self._save_prompt()
+            if route.path == "/channels":
+                return self._set_channel()
         except Exception as exc:
             return self._send(500, {"error": "内部出错：%s" % exc})
         return self._send(404, {"error": "没有这个地址"})
@@ -211,8 +237,32 @@ class _Handler(BaseHTTPRequestHandler):
         text = str(payload.get("text") or "").strip()
         if not text:
             return self._send(400, {"error": "没有正文"})
-        item_id = _store_of(self.server).push("user", text)
+        # 网页说的一句：正文直接进记录（她就坐在这头跟我说话），
+        # 但来源照实写——网页「消息」页上要看得见它是从哪儿来的。
+        item_id = _store_of(self.server).push("user", text, source="网页",
+                                             direct=True)
         return self._send(200, {"ok": True, "id": item_id})
+
+    def _set_channel(self):
+        """改一个会话的投递策略：wake / batch / mute。
+
+        `chat` 与 `chat_id` 都认：核心里的名字是 chat_id，网页那边写着写着
+        就成了 chat —— 两边对不上就是 400，用户点一下策略发现改不动。
+        """
+        payload = self._body()
+        chat = str(payload.get("chat_id") or payload.get("chat") or "").strip()
+        policy = str(payload.get("policy") or "").strip().lower()
+        if not chat or policy not in ("wake", "batch", "mute"):
+            return self._send(400, {"error": "要 chat_id 和 policy（wake / batch / mute）"})
+        store = _store_of(self.server)
+        try:
+            changed = store.set_policy(chat, policy)
+        except KeyError:
+            return self._send(404, {"error": "没有这个会话：%s" % chat})
+        except ValueError as exc:
+            return self._send(400, {"error": str(exc)})
+        return self._send(200, {"ok": True, "changed": changed,
+                                "channels": store.channels()})
 
     def _inbox(self):
         """通道适配器往这里推一条进件（QQ、电报、脚本都一样）。
@@ -228,17 +278,41 @@ class _Handler(BaseHTTPRequestHandler):
         meta = payload.get("meta")
         if not isinstance(meta, dict):
             meta = {}
-        item_id = _store_of(self.server).push(
+        store = _store_of(self.server)
+        source = str(payload.get("source") or "")
+        raw_ext = str(payload.get("ext_id") or "")
+        ext_id = ("%s:%s" % (source or "外部", raw_ext)) if raw_ext else ""
+        if ext_id and store.inbox_has_ext(ext_id):
+            # 同一条外部消息推过一遍了（补拉历史、重连补漏）：不再插，也不再叫醒她
+            return self._send(200, {"ok": True, "duplicate": True, "id": 0})
+        item_id = store.push(
             str(payload.get("kind") or "user"), text,
             policy=str(payload.get("policy") or ""),
-            source=str(payload.get("source") or ""),
+            source=source,
             chat_type=str(payload.get("chat_type") or ""),
             chat_id=str(payload.get("chat_id") or ""),
             chat_name=str(payload.get("chat_name") or ""),
             sender_id=str(payload.get("sender_id") or ""),
             sender_name=str(payload.get("sender_name") or ""),
-            meta=meta)
+            meta=meta,
+            direct=bool(payload.get("direct")),
+            ext_id=ext_id)
         return self._send(200, {"ok": True, "id": item_id})
+
+    def _inbox_view(self, query: dict) -> dict:
+        """网页看的那一份收件箱：最近的进件 + 每个会话的策略。
+
+        跟她自己看到的不一样：她只看得见没读的正文；这里把读过的、按 mute
+        藏起来的也列出来——网页是仪表盘，人得能核对"谁说了什么、她看没看"。
+        """
+        store = _store_of(self.server)
+        try:
+            limit = int((query.get("limit") or ["60"])[0])
+        except ValueError:
+            limit = 60
+        items = store.inbox_recent(min(300, max(1, limit)))
+        return {"items": items, "channels": store.channels(),
+                "counts": store.inbox_counts()}
 
     def _save_settings(self):
         payload = self._body()

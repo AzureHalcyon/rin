@@ -115,7 +115,7 @@ def _stdin_pump(db_path: str) -> None:
             if not text:
                 continue
             try:
-                store.push("user", text)
+                store.push("user", text, source="命令行", direct=True)
             except Exception as exc:
                 print("[输入出错] %s" % exc, file=sys.stderr, flush=True)
                 continue

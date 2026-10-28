@@ -15,9 +15,9 @@ import side
 
 ORDER = [
     "check_tools", "check_memory", "check_recall_log", "check_input_line",
-    "check_web", "check_settings", "check_memory_tools", "check_page_edits",
-    "check_channel_settings", "check_channel", "check_workspace",
-    "check_web_tools", "check_shell",
+    "check_web", "check_qq_bridge", "check_settings", "check_memory_tools",
+    "check_page_edits", "check_channel_settings", "check_channel",
+    "check_workspace", "check_web_tools", "check_shell",
 ]
 
 
