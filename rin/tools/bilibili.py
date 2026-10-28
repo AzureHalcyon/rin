@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -448,20 +449,32 @@ def _transcript(text: dict, payload: dict) -> str:
 
 
 def _workdir() -> str:
-    """下载与切段的临时目录。
+    """找一个**真能写**的临时目录。
 
-    不用系统 temp：沙箱里它建得出来、写不进去。默认放在进程当前目录下的
-    `data/tmp`（服务端是 `/opt/rin/data/tmp`，那边本来就可写、也不进版本控制），
-    要换位置给 `BILI_TMPDIR`。
+    逐个试：`BILI_TMPDIR` → 系统 temp → 进程目录下的 `data/tmp` → 进程目录。
+    Windows 沙箱里系统 temp 建得出来却写不进去，所以光看能不能 mkdir 不够，
+    要真写一个探针文件。
     """
-    base = str(os.environ.get("BILI_TMPDIR") or "").strip()
-    if not base:
-        base = os.path.join(os.getcwd(), "data", "tmp")
-    os.makedirs(base, exist_ok=True)
-    # 不用 tempfile.mkdtemp：它在 Windows 上把目录建成 0o700，结果连自己也写不进去。
-    work = os.path.join(base, "bili-audio-" + uuid.uuid4().hex[:8])
-    os.makedirs(work, exist_ok=True)
-    return work
+    candidates = []
+    custom = str(os.environ.get("BILI_TMPDIR") or "").strip()
+    if custom:
+        candidates.append(custom)
+    candidates.append(tempfile.gettempdir())
+    candidates.append(os.path.join(os.getcwd(), "data", "tmp"))
+    candidates.append(os.getcwd())
+    for base in candidates:
+        try:
+            os.makedirs(base, exist_ok=True)
+            probe = os.path.join(base, ".bili-probe-" + uuid.uuid4().hex[:6])
+            with open(probe, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            os.remove(probe)
+        except OSError:
+            continue
+        work = os.path.join(base, "bili-audio-" + uuid.uuid4().hex[:8])
+        os.makedirs(work, exist_ok=True)
+        return work
+    raise BiliError("找不到可写的临时目录", "tmp")
 
 
 def _download(url: str, path: str) -> None:
@@ -519,7 +532,12 @@ def _asr_file(path: str, key: str) -> str:
         with urllib.request.urlopen(request, timeout=300) as response:
             raw = json.loads(response.read())
     except urllib.error.HTTPError as exc:
-        return "!HTTP %s：%s" % (exc.code, exc.read()[:200].decode("utf-8", "replace"))
+        body = exc.read()[:400].decode("utf-8", "replace")
+        if "ASR_RESPONSE_HAVE_NO_WORDS" in body:
+            return "!这段没识别出说话（可能只有音乐或静音）"
+        if "AUDIO_DURATION_TOO_LONG" in body:
+            return "!这段太长，超过了接口单次上限"
+        return "!HTTP %s：%s" % (exc.code, body)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return "!接口出错：%s" % exc
     return _asr_text(raw)
