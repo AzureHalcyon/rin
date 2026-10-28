@@ -50,10 +50,22 @@ TOOLS: Dict[str, Tuple[str, str, List[str]]] = {
 }
 
 
+# 声音：她是谁、怎么说话。核心会在登记过时把它拼在 sink 的最前面（`$voice`）。
+PROMPTS: Dict[str, Tuple[str, str, str]] = {
+    "voice": ("voice · 身份与说话方式",
+              "她是谁、怎么说话、什么不做；拼在 sink 最前面。"
+              "可用占位符：`$name`、`$user`。",
+              "voice.txt"),
+}
+
+
 def register(prompt_files) -> None:
-    """登记进核心的提示词表。
+    """登记到核心：工具描述 10 份，外加声音（`voice`）。
 
     `wait` 不在这里：它由引擎自己实现（等动静 / 等到点），描述也留在核心。
-    重复登记同名工具会被核心拒——那是配置错误，不该静默覆盖。
+    声音（她是谁、怎么说话）是实例的内容，所以在这一侧：核心只会在登记过时把它
+    拼在 sink 最前面。
+    重复登记同名会被核心拒——那是配置错误，不该静默覆盖。
     """
+    prompt_files.register_prompts(PROMPTS, base=PROMPTS_DIR)
     prompt_files.register_tools(TOOLS, base=PROMPTS_DIR)

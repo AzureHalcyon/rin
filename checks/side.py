@@ -456,7 +456,7 @@ def check_settings() -> None:
         call("/prompts", {"key": "sink", "text": "我是测试。"}, "PUT")
         check(prompt_files.text("sink") == "我是测试。", "改提示词该立刻生效")
         call("/prompts", {"key": "sink", "text": ""}, "PUT")
-        check("我是$name" in prompt_files.text("sink"), "清空该回到默认")
+        check("$wait" in prompt_files.text("sink"), "清空该回到默认")
 
         call("/restart", {}, "POST")
         check(control.stop_requested(), "重启是给循环一个停止请求")

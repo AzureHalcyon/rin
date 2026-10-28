@@ -16,5 +16,5 @@ dependencies = ["PyYAML>=6.0"]
 include = ["rin", "rin.*"]
 
 [tool.setuptools.package-data]
-# 工具描述与页面是代码的一部分：缺一份，模型就少一个工具说明。
-rin = ["prompts/tools/*.txt", "web/*.html"]
+# 工具描述、声音与页面是代码的一部分：缺一份，模型就少一句说明或少一段口吻。
+rin = ["prompts/*.txt", "prompts/tools/*.txt", "web/*.html"]
