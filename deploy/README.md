@@ -15,7 +15,19 @@ systemd 用 `PYTHONPATH` 把两个目录都指上，改代码只要重传再重�
 
 数据目录（`--data`）跟着这个仓走：`/opt/rin/data`。凭证仍在 `/etc`，两边共用。
 `/opt/palimpsest` 底下还有三样**不要**被同步冲掉：`.venv`、`data`（迁移前的旧数据，留作回滚）、
-`app`（跟这两个仓无关的遗留目录）。
+`app`（跟这两个仓无关的遗留目录）；`/opt/rin/data` 同样不能被同步冲掉——所以两边的
+`rsync --delete` 都要带 `--exclude data`。
+
+## 机器上要装的东西
+
+| 东西 | 干什么 | 怎么装 |
+|---|---|---|
+| `ffmpeg` | 视频抽音轨（`bilibili_transcript`） | `sudo apt-get install -y ffmpeg` |
+| `BILI_SESSDATA` | B 站登录 cookie，字幕接口要它 | 写进 `/etc/palimpsest/loop.env`，值是裸 SESSDATA |
+| 百炼的键 | 语音转写（`qwen3-asr-flash`） | 已在 `credentials.yaml` 的 `ALIYUN_MAAS_API_KEY`；入口会自动填进 `ASR_KEY` |
+
+`loop.env` 末尾**要有换行**再追加新键，否则会和上一行拼成一行（`LOOP_HTTP=...BILI_SESSDATA=...`），
+服务起来时 `--http` 拿到一个坏地址。
 
 ## 从单仓切过来（第一次）
 
@@ -41,7 +53,7 @@ systemd 用 `PYTHONPATH` 把两个目录都指上，改代码只要重传再重�
        tar -xzf /tmp/deploy-rin.tar.gz -C /tmp/newr
        sudo rsync -a --delete --exclude data --exclude .venv --exclude app /tmp/newp/ /opt/palimpsest/
        sudo mkdir -p /opt/rin
-       sudo rsync -a --delete /tmp/newr/ /opt/rin/
+       sudo rsync -a --delete --exclude data /tmp/newr/ /opt/rin/
        sudo chown -R palimpsest:palimpsest /opt/rin
 
 4. **迁数据：复制，不移动。** 先停服务再复制，旧目录原样留着，回滚要用：
@@ -75,10 +87,11 @@ systemd 用 `PYTHONPATH` 把两个目录都指上，改代码只要重传再重�
     git -C rin        archive --format=tar.gz -o r.tar.gz HEAD
     scp p.tar.gz r.tar.gz <user>@<host>:/tmp/
 
-    # 服务器：解开、同步、重启
-    rm -rf /tmp/newp && mkdir -p /tmp/newp && tar -xzf /tmp/p.tar.gz -C /tmp/newp
+    # 服务器：解开、同步、重启（两个仓要一起更新：rins 依赖核心的新接口）
+    rm -rf /tmp/newp /tmp/newr && mkdir -p /tmp/newp /tmp/newr
+    tar -xzf /tmp/p.tar.gz -C /tmp/newp && tar -xzf /tmp/r.tar.gz -C /tmp/newr
     sudo rsync -a --delete --exclude data --exclude .venv --exclude app /tmp/newp/ /opt/palimpsest/
-    sudo rsync -a --delete /tmp/newr/ /opt/rin/
+    sudo rsync -a --delete --exclude data /tmp/newr/ /opt/rin/
     sudo systemctl restart palimpsest
 
 ## 回滚

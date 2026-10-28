@@ -104,13 +104,16 @@ def _headers(with_cookie: bool = True) -> Dict[str, str]:
         "Accept": "application/json, text/plain, */*",
     }
     if with_cookie:
-        cookie = os.environ.get("BILI_SESSDATA", "").strip()
-        if cookie:
-            headers["Cookie"] = "SESSDATA=%s" % cookie
-        else:
-            anonymous = _anonymous_cookies()
-            if anonymous:
-                headers["Cookie"] = anonymous
+        # 登录 cookie 和匿名 buvid 要一起带：只给 SESSDATA 时播放器接口容易被 WAF 打回 412。
+        parts = []
+        sessdata = os.environ.get("BILI_SESSDATA", "").strip()
+        if sessdata:
+            parts.append("SESSDATA=" + sessdata)
+        anonymous = _anonymous_cookies()
+        if anonymous:
+            parts.append(anonymous)
+        if parts:
+            headers["Cookie"] = "; ".join(parts)
     return headers
 
 
@@ -122,6 +125,19 @@ class BiliError(RuntimeError):
 
 def _get_json(path: str, params: Optional[dict] = None,
               with_cookie: bool = True) -> dict:
+    """GET 一个接口；412/429/503 这类风控或限流退避一秒再来一次。"""
+    for attempt in range(2):
+        try:
+            return _get_json_once(path, params, with_cookie)
+        except BiliError as exc:
+            if exc.code not in ("http-412", "http-429", "http-503") or attempt:
+                raise
+            time.sleep(1.5)
+    raise BiliError("重试也没成功", "http")
+
+
+def _get_json_once(path: str, params: Optional[dict] = None,
+                   with_cookie: bool = True) -> dict:
     url = BASE + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
@@ -130,7 +146,7 @@ def _get_json(path: str, params: Optional[dict] = None,
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             body = response.read()
     except urllib.error.HTTPError as exc:
-        raise BiliError("HTTP %s" % exc.code, "http") from exc
+        raise BiliError("HTTP %s" % exc.code, "http-%s" % exc.code) from exc
     except (urllib.error.URLError, OSError) as exc:
         raise BiliError("连不上 bilibili：%s" % exc, "network") from exc
     try:
