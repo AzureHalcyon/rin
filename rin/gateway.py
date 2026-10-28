@@ -155,6 +155,8 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if route.path == "/say":
                 return self._say()
+            if route.path == "/inbox":
+                return self._inbox()
             if route.path == "/edits":
                 return self._save_edits()
             if route.path == "/persona":
@@ -210,6 +212,32 @@ class _Handler(BaseHTTPRequestHandler):
         if not text:
             return self._send(400, {"error": "没有正文"})
         item_id = _store_of(self.server).push("user", text)
+        return self._send(200, {"ok": True, "id": item_id})
+
+    def _inbox(self):
+        """通道适配器往这里推一条进件（QQ、电报、脚本都一样）。
+
+        字段：text 必填；kind 默认 user；其余 source / chat_type / chat_id /
+        chat_name / sender_id / sender_name / policy / meta 可选。
+        policy 不传就继承这个会话在 chats 里的策略。
+        """
+        payload = self._body()
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return self._send(400, {"error": "没有正文"})
+        meta = payload.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        item_id = _store_of(self.server).push(
+            str(payload.get("kind") or "user"), text,
+            policy=str(payload.get("policy") or ""),
+            source=str(payload.get("source") or ""),
+            chat_type=str(payload.get("chat_type") or ""),
+            chat_id=str(payload.get("chat_id") or ""),
+            chat_name=str(payload.get("chat_name") or ""),
+            sender_id=str(payload.get("sender_id") or ""),
+            sender_name=str(payload.get("sender_name") or ""),
+            meta=meta)
         return self._send(200, {"ok": True, "id": item_id})
 
     def _save_settings(self):
