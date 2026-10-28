@@ -1,0 +1,21 @@
+给 QQ 那边发一个动作（收发消息、看群和好友、改资料、空间都有）。
+
+**最常用的三个，参数照抄就行**：
+
+```
+qq(action="get_friend_list", params={})
+qq(action="get_group_list", params={})
+qq(action="send_private_msg", params={"user_id": 2189761707, "message": "在"})
+```
+
+其余动作（九十来个：群管理、文件、相册、空间、资料、好友请求…）连同参数、哪些
+动作会动别人的东西，都写在 `<数据>/workspace/QQ-动作清单.md` 里——**先查再调**，
+别凭记忆猜参数。清单里没有的动作不给调。
+
+返回是 NapCat 的原样 JSON（`status` / `retcode` / `data`）；`retcode` 不是 0 就是没做成。
+
+## action
+动作名，比如 `get_friend_list`、`send_private_msg`、`set_friend_remark`。
+
+## params
+参数对象，比如 `{"user_id": 2189761707, "message": "在"}`。没有参数就给 `{}`。

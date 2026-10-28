@@ -243,6 +243,13 @@ def main(argv=None) -> int:
         threading.Thread(target=_stdin_pump, args=(config.db_path(),),
                          daemon=True).start()
 
+    # QQ 的动作清单现写一份进工作区：她自己查得到，改了代码下次起来就更新
+    try:
+        from rin.tools import qq as qq_tool
+        print("[QQ] 动作清单：%s" % qq_tool.write_doc(config), flush=True)
+    except OSError as exc:
+        print("[QQ] 动作清单写不进去：%s" % exc, flush=True)
+
     if args.http:
         host, _, port_text = args.http.rpartition(":")
         try:

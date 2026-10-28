@@ -678,6 +678,82 @@ def check_qq_bridge() -> None:
           "补进来的要带外部编号（去重靠它）：%r" % taken)
 
 
+def check_qq_tool() -> None:
+    """QQ 那个入口：清单写进工作区、按动作名调、不给的和未知的都当场说清楚。"""
+    from rin.app import make_toolsets
+    from rin.tools import qq as qq_tool
+
+    workdir = tempdir("loop-qq-")
+    try:
+        config = _loop_config(name="自检", data_dir=workdir, block_tokens=100000)
+        doc = qq_tool.write_doc(config)
+        check(os.path.isfile(doc), "动作清单要写进工作区：%r" % doc)
+        with open(doc, encoding="utf-8") as handle:
+            body = handle.read()
+        check("send_private_msg" in body and "get_group_list" in body,
+              "清单里该有常用动作：%r" % body[:80])
+        check("send_packet" in body, "不给的动作也要在清单里写明为什么")
+
+        # 工具面里要有它（说明文字登记过、schema 拼得出来）
+        store = LoopStore(os.path.join(workdir, "loop.sqlite3"))
+        try:
+            loop = Loop(config, credentials=None, store=store,
+                        compressor=Compressor(config, summarizer=fake_summarizer),
+                        memory=MemoryBridge.disabled(), client=FakeClient(),
+                        toolsets=make_toolsets(config))
+            names = [tool["function"]["name"] for tool in loop.tools()]
+            check("qq" in names, "工具面里要有 qq：%r" % names)
+        finally:
+            store.close()
+
+        got = {}
+
+        def fake_post(action, params):
+            got.update(action=action, params=params)
+            return {"status": "ok", "retcode": 0, "data": {"user_id": 1}}
+
+        original = qq_tool._post
+        qq_tool._post = fake_post
+        try:
+            out = qq_tool.call("qq", json.dumps(
+                {"action": "get_friend_list", "params": {}}), config)
+        finally:
+            qq_tool._post = original
+        check(got.get("action") == "get_friend_list", "该按动作名调：%r" % got)
+        check("get_friend_list" in out and "ok" in out, "结果要带动作与返回：%r" % out)
+
+        called = []
+        qq_tool._post = lambda action, params: (
+            called.append(action) or {"status": "ok", "retcode": 0})
+        try:
+            blocked = qq_tool.call("qq", json.dumps({"action": "set_restart"}), config)
+            unknown = qq_tool.call("qq", json.dumps({"action": "hack_all"}), config)
+            empty = qq_tool.call("qq", json.dumps({"params": {}}), config)
+            ok_reply = qq_tool.call("qq", json.dumps(
+                {"action": "send_private_msg",
+                 "params": {"user_id": 1, "message": "x"}}), config)
+        finally:
+            qq_tool._post = original
+        check("不给" in blocked, "不给的动作要拒：%r" % blocked)
+        check("清单里没有" in unknown, "未知动作要拒并指出清单：%r" % unknown)
+        check("要给一个 action" in empty, "缺 action 要提醒：%r" % empty)
+        check("send_private_msg" in ok_reply and "retcode" in ok_reply,
+              "成功要把返回带回来：%r" % ok_reply)
+        check(called == ["send_private_msg"], "被拒的动作不该真的发出去：%r" % called)
+
+        # retcode 不是 0 = 没做成：别把失败报成成功
+        qq_tool._post = lambda action, params: {"status": "failed", "retcode": 1400,
+                                                "message": "账号已离线"}
+        try:
+            bad = qq_tool.call("qq", json.dumps(
+                {"action": "send_private_msg", "params": {"user_id": 1}}), config)
+        finally:
+            qq_tool._post = original
+        check("没做成" in bad, "retcode 非 0 要说没做成：%r" % bad)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def check_settings() -> None:
     """设置页：能读、能写、越界拒绝；改提示词不重启就生效；重启是请求不是硬杀。"""
     import urllib.error

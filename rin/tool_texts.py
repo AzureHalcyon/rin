@@ -62,6 +62,10 @@ TOOLS: Dict[str, Tuple[str, str, List[str]]] = {
     "bilibili_transcript": ("工具 · bilibili_transcript",
                             "没有字幕时把视频的声音转成文字。",
                             ["bvid"]),
+    "qq": ("工具 · qq",
+           "给 QQ 那边发一个动作：收发消息、看群和好友、改资料、空间。"
+           "常用三个直接写在说明里，其余看 <数据>/workspace/QQ-动作清单.md。",
+           ["action", "params"]),
 }
 
 

@@ -71,6 +71,31 @@ data/                  她的运行数据（不进版本控制）
 
 临时文件落在 `data/tmp/`（不进版本控制）。
 
+## QQ
+
+接进来的通道在 `rin.qq`（收事件 → 收件箱，见 `deploy/README.md` 的「接 QQ」）。
+她**能主动动手**的那一侧只有一个入口：
+
+```
+qq(action="get_friend_list", params={})
+qq(action="get_group_list", params={})
+qq(action="send_private_msg", params={"user_id": 2189761707, "message": "在"})
+```
+
+NapCat（OneBot 11）有九十来个动作：群管理、文件、相册、空间、资料、好友请求…
+一个动作一个工具会把她的上下文撑满，所以只给一个入口 + **一份清单**：
+
+- 清单在 `<数据>/workspace/QQ-动作清单.md`，**每次起来现写**（`rin.tools.qq_actions`
+  从部署的 NapCat 里抓的动作名，改代码就更新），她拿 `run` / `write` 都看得到；
+- 最常用的三个直接写在工具说明里（上面那三行），不用翻文档；
+- 清单里没有的动作不给调；`send_packet` / `set_restart` / `get_cookies` 这几条
+  直接拒——能把她自己的连接弄down，或者等于交出账号；
+- 会动别人东西的动作（踢人、禁言、删好友、发说说…）照做，但工具结果会明说这一步
+  改了什么，记录里也留得住。
+
+端点与令牌：`NAPCAT_BASE`（默认 `http://127.0.0.1:3000`）、`NAPCAT_TOKEN`，
+和适配器读同一份 `/etc/palimpsest/qq.env`（服务单元里多挂一行 `EnvironmentFile`）。
+
 ## 自检
 
     python checks/run.py
