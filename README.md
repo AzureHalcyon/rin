@@ -244,3 +244,12 @@ python -m rin --name 名字 --http 127.0.0.1:8080
 
 网络不在 Landlock 的文件词表里，所以它照常能联网（要断网得用 namespace，这台机器上
 `unshare -r` 被禁）。工具名与说明在 `prompts/tools/run.txt`。
+
+## 协议
+
+| 部分 | 协议 |
+|---|---|
+| 代码 | Apache-2.0，见 [`LICENSE`](LICENSE) |
+| 设计 / 文档 | CC BY-SA 4.0，见 [`LICENSE-DOCS`](LICENSE-DOCS) |
+
+Copyright © 2026 AzureHalcyon

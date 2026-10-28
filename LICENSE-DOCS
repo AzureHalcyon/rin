@@ -1,0 +1,30 @@
+设计文档 · 协议
+================
+
+本仓库中的**文字作品**（`*.md` 等文档：设计、研究记录、说明、讨论记录）
+采用 **Creative Commons Attribution-ShareAlike 4.0 International（CC BY-SA 4.0）**。
+
+你可以：
+  · 共享 —— 以任何媒介或格式复制、发行本作品
+  · 演绎 —— 修改、转换或以本作品为基础进行创作，**包括商业目的**
+
+但必须遵守下列条件：
+  · 署名（BY）        —— 必须给出适当署名、注明是否作了修改，并指向本协议
+  · 相同方式共享（SA） —— 若你修改或基于本作品创作，你的贡献必须
+                          以**同一协议**分发
+
+协议全文（官方 · 法律文本）：
+  https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+人读版摘要（官方）：
+  https://creativecommons.org/licenses/by-sa/4.0/
+
+建议的署名写法：
+  "基于 palimpsest（https://github.com/AzureHalcyon/palimpsest）的设计，
+   由 <你的名字> 修改，依 CC BY-SA 4.0 分发。"
+
+--------------------------------------------------------------------
+注意：**代码不受本协议约束** —— 代码采用 Apache License 2.0，见同目录 `LICENSE`。
+--------------------------------------------------------------------
+
+Copyright (c) 2026 AzureHalcyon
