@@ -1,0 +1,6 @@
+取一件具体的记忆，写成一段第一人称回忆；只有这段回忆进上下文。
+
+**与其他工具配合使用**：先 recall 拿 id 再 recollect；想起这件事跟另一件有关，用 remember 另开一件讲它、再用 link 连过去。
+
+## event
+事件 id，来自 recall 的候选或 remember 的返回。

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行数据与日志（她的东西：人格、提示词覆盖、设置、记忆图）
+data/
+out/
+*.log
+
+# 凭证
+*.key
+credentials*
+.env
+凭证.env
+凭证.yaml
+
+# 本机工作文件
+.local/
+
+# 临时
+*.tmp

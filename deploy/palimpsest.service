@@ -1,0 +1,24 @@
+[Unit]
+Description=palimpsest 持续在场循环（rin 这一侧）
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=palimpsest
+Group=palimpsest
+WorkingDirectory=/opt/rin
+EnvironmentFile=/etc/palimpsest/loop.env
+Environment=PYTHONUNBUFFERED=1
+# 两个仓并排放，不装进站点包：核心 (/opt/palimpsest) 提供 loop 与 memory_v2，
+# 落地层 (/opt/rin) 提供 rin。改代码只要重传并重启，不用重新安装。
+Environment=PYTHONPATH=/opt/palimpsest:/opt/rin
+ExecStart=/opt/palimpsest/.venv/bin/python -m rin --name ${LOOP_NAME} --credentials /etc/palimpsest/credentials.yaml --data data --memory-data data/memory --http ${LOOP_HTTP} --daily-token-cap ${LOOP_DAILY_CAP} --daily-token-warn ${LOOP_DAILY_WARN}
+Restart=always
+RestartSec=5
+# 时间和内存都交给 systemd 兜一层：真跑飞了先杀它，别拖垮整台机器。
+MemoryMax=1500M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,1530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>palimpsest</title>
+<style>
+:root{
+  /* 取自 deepseek-harness/packages/client/ui-theme/src/styles/design-platform.css
+     深色主题（body[data-ds-dark-theme]）：neutral-bluish 阶梯 + 白字。 */
+  --bg:#151517;                        /* alias-bg-base   = bluish-950 */
+  --panel:#1b1b1c;                     /* specific-sidebar-fill = bluish-900 */
+  --field:#2c2c2e;                     /* specific-bubble / input-major = bluish-850 */
+  --bubble:#2c2c2e;                    /* 用户气泡（浅色下是 deepseek-50） */
+  --raise:#232324;                     /* alias-bg-layer-1 = bluish-875 */
+  --hover:rgba(255,255,255,.08);       /* alias-interactive-bg-hover */
+  --line:rgba(255,255,255,.06);        /* alias-border-l1 */
+  --line2:rgba(255,255,255,.12);       /* alias-border-l2 */
+  --line3:rgba(255,255,255,.16);       /* alias-border-l3 */
+  --track:rgba(255,255,255,.08);       /* 进度条底 */
+  --fg:#f9fafb;                        /* alias-label-primary  = bluish-50 */
+  --fg2:#cfd3d6;                       /* alias-label-secondary = bluish-300 */
+  --dim:#adb2b8;                       /* alias-label-tertiary = bluish-400 */
+  --faint:#81858c;                     /* alias-label-caption  = bluish-600 */
+  --ghost:#5f6469;
+  --you:#7aaaff;                       /* alias-link = deepseek-400 */
+  --tool:#b7c8fe;                      /* deepseek-300 */
+  --warn:#f59e0b;                      /* state-warn-primary */
+  --ok:#22c55e;                        /* state-success-primary */
+  --bad:#f25a5a;                       /* state-error-primary */
+  --mono:'SF Mono','JetBrains Mono','Fira Code',Consolas,'Liberation Mono',Menlo,
+    Courier,'PingFang SC','Microsoft YaHei';
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB',
+    'Microsoft YaHei','Helvetica Neue',Helvetica,Arial,sans-serif;
+}
+/* 浅色：同一套语义变量换取值，组件代码不认主题 —— 数值取自 DSH 的 light 主题
+   （label 用 bluish-1000/700/600/400，气泡是 deepseek-50，边框是黑 4%/10%/12%）。 */
+html[data-theme="light"]{
+  color-scheme:light;
+  --bg:#ffffff;
+  --panel:#f9fafb;                    /* specific-sidebar-fill = bluish-50 */
+  --field:#ffffff;                    /* specific-input-major */
+  --bubble:#edf3fe;                   /* specific-bubble = deepseek-50 */
+  --raise:#f5f6f8;
+  --hover:rgba(38,49,72,.06);
+  --line:rgba(0,0,0,.05);
+  --line2:rgba(0,0,0,.10);
+  --line3:rgba(0,0,0,.14);
+  --track:rgba(0,0,0,.06);
+  --fg:#0f1115;                       /* bluish-1000 */
+  --fg2:#61666b;                      /* bluish-700 */
+  --dim:#81858c;                      /* bluish-600 */
+  --faint:#a7acb2;                    /* bluish-400 */
+  --ghost:#c2c6ca;
+  --you:#4176e6;                      /* alias-link = deepseek-500 */
+  --tool:#4868b2;                     /* deepseek-600 */
+  --warn:#dd8629;                     /* amber-600 */
+  --ok:#22c55e;
+  --bad:#ec1313;                      /* red-600 */
+}
+html{color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);
+  font:14.5px/1.72 var(--sans);-webkit-font-smoothing:antialiased}
+body{display:flex;min-height:100vh}
+
+/* ── 左栏 ─────────────────────────────────────────────────────────────── */
+#side{width:236px;flex:0 0 236px;background:var(--panel);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;padding:0 12px 14px;overflow-y:auto}
+#side .brand{display:flex;align-items:center;gap:8px;padding:18px 6px 16px;
+  font-weight:600;font-size:14px;letter-spacing:.02em}
+#side .brand i{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--fg);
+  display:inline-block}
+#side .new{display:flex;align-items:center;justify-content:center;gap:8px;
+  border:1px solid var(--line2);border-radius:10px;padding:9px;font-size:13px;
+  color:var(--fg);background:transparent;cursor:pointer;width:100%}
+#side .new:hover{background:var(--hover)}
+#side nav{margin-top:14px;display:flex;flex-direction:column;gap:2px}
+#side nav a{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:8px;
+  color:var(--dim);font-size:13px;cursor:default}
+#side nav a:hover{background:var(--hover);color:var(--fg)}
+#side .lab{margin:18px 8px 7px;font-size:11px;color:var(--ghost);letter-spacing:.04em}
+
+.stat{display:flex;justify-content:space-between;padding:4px 8px;font-size:12px;
+  color:var(--faint);font-family:var(--mono)}
+.stat b{color:var(--fg2);font-weight:500}
+.meter{height:4px;border-radius:3px;background:var(--track);overflow:hidden;margin:2px 8px 9px}
+.meter i{display:block;height:100%;background:var(--faint)}
+.meter.hot i{background:var(--warn)}
+
+#side .band{display:block;width:100%;text-align:left;background:transparent;border:0;
+  padding:6px 8px;border-radius:8px;color:var(--faint);font-size:12px;
+  font-family:var(--mono);cursor:pointer}
+#side .band:hover{background:var(--hover);color:var(--fg2)}
+
+#side .foot{margin-top:auto;padding:10px 8px 0;border-top:1px solid var(--line);
+  font-size:11px;color:var(--ghost);font-family:var(--mono)}
+
+/* ── 主区 ─────────────────────────────────────────────────────────────── */
+#main{flex:1;min-width:0;display:flex;flex-direction:column}
+#top{display:flex;align-items:center;gap:10px;padding:12px 22px;
+  border-bottom:1px solid var(--line);font-size:13px;color:var(--dim)}
+#top .tabs{display:flex;gap:16px;font-size:13px}
+#top .tabs span{padding-bottom:11px;margin-bottom:-12px;border-bottom:1.5px solid transparent;
+  cursor:default}
+#top .tabs span.on{color:var(--fg);border-bottom-color:var(--fg)}
+#top .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.pill:empty{display:none}
+.pill{border:1px solid var(--line2);border-radius:999px;padding:2px 10px;font-size:11.5px;
+  color:var(--dim);font-family:var(--mono)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--ghost);display:inline-block}
+.dot.thinking{background:var(--you);animation:pulse 1.1s infinite}
+.dot.waiting{background:var(--warn)}
+.dot.retry{background:var(--bad);animation:pulse .8s infinite}
+@keyframes pulse{50%{opacity:.2}}
+
+#thread{flex:1;overflow-y:auto;padding:26px 0 40px}
+.wrap{width:100%;max-width:760px;margin:0 auto;padding:0 24px}
+
+.divider{display:flex;align-items:center;gap:10px;margin:24px 0 6px;color:var(--ghost);
+  font-size:11px;font-family:var(--mono)}
+.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.divider:first-child{margin-top:0}
+
+.row{display:flex;margin:10px 0}
+.row.user{justify-content:flex-end}
+.row.user .body{background:var(--bubble);border-radius:14px;padding:8px 14px;
+  max-width:78%;white-space:pre-wrap;word-break:break-word;color:var(--fg2)}
+.row.assistant .body{white-space:pre-wrap;word-break:break-word;color:var(--fg)}
+.row.draft .body{color:var(--fg2);opacity:.85}
+.row.draft .caret{opacity:.6;animation:blink 1s steps(1) infinite}
+.row.draft .thinking{color:var(--ghost)}
+.dthink{display:flex;gap:6px;align-items:baseline;color:var(--ghost);font-size:12px;
+  line-height:22px;padding:0 2px;overflow:hidden;white-space:nowrap;
+  text-overflow:ellipsis;max-width:100%}
+.dthink .ico{flex:none;opacity:.7}
+@keyframes blink{50%{opacity:0}}
+
+/* 一行式披露行：和 DSH 的 DisclosureRow 一样——16px 图标位、gap 6、13/24 标题、
+   2px 小点分隔、摘要一行省略号；展开后正文缩进 22px。 */
+details.frow{display:block;margin:1px 0}
+details.frow>summary{display:flex;align-items:center;min-width:0;list-style:none;
+  color:var(--dim);font-size:13px;line-height:24px;cursor:pointer}
+details.frow>summary::-webkit-details-marker{display:none}
+details.frow>summary:hover{color:var(--fg2)}
+.frow .ico{flex:none;width:16px;height:16px;display:grid;place-items:center;
+  margin-right:6px;font-size:11px;color:var(--faint)}
+.frow .ttl{flex:none}
+.frow .sdot{flex:none;width:2px;height:2px;border-radius:1px;background:var(--faint);
+  margin:0 8px}
+.frow .sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;color:var(--faint);font-size:13px}
+.frow[open] .sum{color:var(--ghost)}
+.fbody{padding:2px 0 6px 22px;font-family:var(--mono);font-size:12px;line-height:1.65;
+  color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:320px;
+  overflow:auto}
+
+/* 时间线里那行「提醒」：整行一块，靠左边一条橙杠认它。
+   别叫 .note —— 抽屉里 role 的标签就是 class="r note"，两个撞在一起
+   （标签会被撑成 12px 内边距 + 橙杠，字挤成一列竖着排）。 */
+.sysnote{margin:8px 0;padding:5px 12px;border-left:2px solid var(--warn);color:var(--dim);
+  font-size:12px;font-family:var(--mono)}
+.empty{color:var(--ghost);font-size:13px;text-align:center;padding:60px 0}
+
+/* ── 输入 ─────────────────────────────────────────────────────────────── */
+/* 照 App 的 composer 搬过来的：12–14 圆角、单行总高
+   48、多行向上长到 5 行后整块滚、左边一行号槽（26 + 10 间隔）、回车只换行、
+   发送是**外面独立的 36 圆钮**。常数也照抄：行高 22、最多 5 行、动画 120ms。
+   行号按**逻辑行**编（折行的续行留空），跟编辑器一样。 */
+#bottom{padding:0 24px 16px}
+.composer{max-width:760px;margin:0 auto;border:1px solid var(--line2);
+  border-radius:14px;background:var(--field);padding:13px 9px 13px 10px;
+  display:flex;gap:8px;align-items:flex-start}
+.composer:focus-within{border-color:var(--line3)}
+.gwrap{flex:1;min-width:0;display:flex;align-items:flex-start}
+.gutter{flex:none;width:36px;height:22px;padding-right:10px;overflow:hidden;
+  position:relative;transition:height .12s ease}
+.gutter .gin{position:absolute;top:0;left:0;right:10px;will-change:transform}
+.gutter .n{height:22px;line-height:22px;text-align:right;font:12px/22px var(--mono);
+  color:var(--faint);user-select:none}
+#mirror{position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none;
+  white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;
+  font:14.5px/22px var(--sans)}
+.composer textarea{flex:1;min-width:0;display:block;background:transparent;border:0;
+  outline:none;color:var(--fg);font:14.5px/22px var(--sans);resize:none;height:22px;
+  padding:0;overflow-y:auto;white-space:pre-wrap;overflow-wrap:break-word;
+  word-break:break-word;transition:height .12s ease;
+  /* 滚动条一出现就会吃掉宽度 ⇒ 折行跟着变、行号和文字错位。行号槽本身就是
+     位置提示，滚轮照常滚，条子不看也罢。 */
+  scrollbar-width:none}
+.composer textarea::-webkit-scrollbar{width:0;height:0}
+.composer textarea::placeholder{color:var(--faint)}
+.composer .send{flex:none;width:36px;height:36px;border-radius:50%;border:0;padding:0;
+  background:var(--fg);color:var(--bg);cursor:pointer;display:grid;place-items:center;
+  transition:opacity .12s,transform .12s}
+.composer .send:disabled{opacity:.3;cursor:default}
+.composer .send:active:not(:disabled){transform:scale(.94)}
+.composer .send svg{width:18px;height:18px;display:block}
+.spinner{width:15px;height:15px;border-radius:50%;border:2px solid var(--bg);
+  border-top-color:transparent;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#statusline{max-width:760px;margin:6px auto 0;display:flex;gap:6px;align-items:center;
+  font-size:11.5px;color:var(--faint);font-family:var(--mono)}
+#statusline .spacer{flex:1}
+#statusline .sep{color:var(--ghost)}
+.spin{font-variant-numeric:tabular-nums}
+.mpill{flex:none;font-size:11px;color:var(--faint);border:1px solid var(--line2);
+  border-radius:8px;padding:1px 7px;font-family:var(--mono);white-space:nowrap}
+#c-model{cursor:pointer}
+.pill.mbtn{background:transparent;cursor:pointer;font-family:var(--mono)}
+.pill.mbtn:hover{color:var(--fg);border-color:var(--line3);background:var(--hover)}
+.iconbtn{width:26px;height:26px;border-radius:8px;border:1px solid var(--line2);
+  background:transparent;color:var(--dim);cursor:pointer;display:grid;place-items:center;
+  font-size:13px;padding:0;line-height:1}
+.iconbtn:hover{color:var(--fg);border-color:var(--line3);background:var(--hover)}
+
+/* ── 选模型 ───────────────────────────────────────────────────────────── */
+#picker{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;z-index:14;
+  align-items:flex-start;justify-content:center;padding-top:13vh}
+#picker.open{display:flex}
+#picker .pbox{width:min(520px,92vw);max-height:70vh;display:flex;flex-direction:column;
+  background:var(--panel);border:1px solid var(--line2);border-radius:14px;overflow:hidden;
+  box-shadow:0 18px 48px rgba(0,0,0,.35)}
+#picker .phead{display:flex;align-items:center;gap:10px;padding:12px 14px;
+  border-bottom:1px solid var(--line);font-size:13px}
+#picker .phead #p-note{color:var(--faint);font-size:11.5px;font-family:var(--mono)}
+#picker .phead button{background:transparent;border:1px solid var(--line2);color:var(--dim);
+  border-radius:8px;padding:4px 10px;font:12px var(--sans);cursor:pointer}
+#picker .phead button:hover{color:var(--fg);border-color:var(--line3)}
+#picker .pbody{overflow-y:auto;padding:6px 8px 10px}
+#picker .mrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;
+  cursor:pointer;font:12.5px var(--mono);color:var(--fg2)}
+#picker .mrow:hover{background:var(--hover);color:var(--fg)}
+#picker .mrow .tag{margin-left:auto;font-size:11px;color:var(--faint)}
+#picker .mrow.on{background:var(--hover)}
+#picker .mrow.on .tag{color:var(--ok)}
+#picker .perr{color:var(--warn);font-size:12px;padding:8px 10px;font-family:var(--mono)}
+#picker .perr.quiet{color:var(--faint);word-break:break-all}
+
+/* ── 设置 ─────────────────────────────────────────────────────────────── */
+#settings{position:fixed;inset:0;background:var(--bg);z-index:8;display:none;
+  flex-direction:column}
+#settings.open{display:flex}
+#settings .shead button{background:transparent;border:1px solid var(--line2);
+  color:var(--dim);border-radius:8px;padding:5px 12px;font:12px var(--sans);cursor:pointer}
+#settings .shead button:hover{color:var(--fg);border-color:var(--line3)}
+#settings .shead{display:flex;align-items:center;gap:10px;padding:12px 20px;
+  border-bottom:1px solid var(--line);font-size:13px}
+#settings .sbody{flex:1;overflow-y:auto;padding:14px 0 48px}
+#settings .sinner{max-width:780px;margin:0 auto;padding:0 22px}
+.forg{display:flex;gap:14px;padding:9px 0;border-bottom:1px solid var(--line);
+  align-items:flex-start}
+.forg .lab{flex:0 0 132px;font-size:13px;color:var(--fg2);padding-top:2px}
+.forg .ctl{flex:1;min-width:0}
+.forg input[type=text],.forg input[type=number],.forg select{width:100%;max-width:240px;
+  background:var(--field);border:1px solid var(--line2);color:var(--fg);
+  border-radius:8px;padding:6px 9px;font:12.5px var(--mono);outline:none}
+.forg select{max-width:150px;padding:6px 6px}
+.forg input:focus,.forg select:focus{border-color:var(--line3)}
+.forg .rowline{display:flex;gap:6px;align-items:center}
+.forg .pick{flex:none;background:transparent;border:1px solid var(--line2);
+  color:var(--dim);border-radius:8px;padding:5px 9px;font:12px var(--sans);
+  cursor:pointer;white-space:nowrap}
+.forg .pick:hover{color:var(--fg);border-color:var(--line3);background:var(--hover)}
+.forg .hint{color:var(--faint);font-size:11.5px;margin-top:3px;line-height:1.5}
+.pblock{border:1px solid var(--line);border-radius:10px;margin:10px 0;
+  background:var(--panel);overflow:hidden}
+.pblock>summary{padding:9px 13px;cursor:pointer;font-size:13px;list-style:none;
+  display:flex;align-items:center;gap:8px;color:var(--fg2)}
+.pblock>summary::-webkit-details-marker{display:none}
+.pblock>summary .meta{margin-left:auto;color:var(--faint);font-size:11px;
+  font-family:var(--mono)}
+.pblock .pbody{padding:0 13px 12px;border-top:1px solid var(--line)}
+.pblock .desc{color:var(--dim);font-size:12px;margin:8px 0}
+.pblock textarea{width:100%;min-height:220px;background:var(--bg);color:var(--fg2);
+  border:1px solid var(--line2);border-radius:8px;padding:10px;resize:vertical;
+  font:12px/1.65 var(--mono);outline:none}
+.pblock .acts{display:flex;gap:8px;margin-top:8px;align-items:center}
+/* 事件图：独立的整页，里面那页自带数据，不需要再来取接口 */
+#graphview{position:fixed;inset:0;background:var(--bg);z-index:9;display:none;
+  flex-direction:column}
+#graphview.open{display:flex}
+#graphview .ghead{display:flex;align-items:center;gap:10px;padding:10px 16px;
+  border-bottom:1px solid var(--line);font-size:13px}
+#graphview .ghead button{background:transparent;border:1px solid var(--line2);
+  color:var(--dim);border-radius:8px;padding:4px 11px;font:12px var(--sans);cursor:pointer}
+#graphview .ghead button:hover{color:var(--fg);border-color:var(--line3)}
+#graphview iframe{flex:1;width:100%;border:0;background:#0a0d13}
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+  background:var(--field);border:1px solid var(--line2);color:var(--fg);
+  padding:8px 16px;border-radius:10px;font-size:12.5px;opacity:0;pointer-events:none;
+  transition:all .18s;z-index:20}
+#toast.on{opacity:1;transform:translateX(-50%)}
+.eitem{position:relative}
+.eitem .del{position:absolute;right:-2px;top:0;opacity:0;background:none;border:0;
+  color:var(--ghost);font-size:11px;cursor:pointer;padding:2px 4px;line-height:1;
+  transition:color .12s,opacity .12s}
+.eitem:hover .del{opacity:1}
+.eitem .del:hover{color:var(--bad)}
+@media (hover:none){.eitem .del{opacity:.45}}
+/* ── 抽屉 ─────────────────────────────────────────────────────────────── */
+#drawer{position:fixed;top:0;right:0;bottom:0;width:430px;max-width:92vw;
+  background:var(--panel);border-left:1px solid var(--line2);transform:translateX(101%);
+  transition:transform .18s ease;z-index:5;display:flex;flex-direction:column}
+#drawer.open{transform:none}
+#drawer .dhead{display:flex;align-items:center;gap:10px;padding:13px 16px;
+  border-bottom:1px solid var(--line);font-size:13px}
+#drawer .dbody{flex:1;overflow-y:auto;padding:14px 16px 28px;font-size:12.5px}
+.sec{margin-bottom:16px}
+.sec h3{font-size:11px;font-weight:600;color:var(--ghost);margin:0 0 7px;
+  letter-spacing:.05em}
+details.item{border:1px solid var(--line);border-radius:8px;background:var(--raise);
+  margin:6px 0;padding:0 10px}
+details.item>summary{cursor:pointer;padding:7px 0;font-size:11.5px;color:var(--dim);
+  list-style:none;display:flex;gap:8px;align-items:baseline;font-family:var(--mono)}
+details.item>summary::-webkit-details-marker{display:none}
+details.item>summary .tag{flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;color:var(--fg2)}
+details.item>summary .meta{flex:none;margin-left:auto;white-space:nowrap;color:var(--ghost)}
+/* 原文块自己滚（抽屉就不会被它撑长）；每条正文不再单独限高——
+   只剩「抽屉 → 块」两层，手势才滚得动。 */
+details.item .body{padding:0 0 9px;font-family:var(--mono);font-size:11.5px;
+  white-space:pre-wrap;word-break:break-word;color:var(--dim);
+  max-height:44vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.entry{display:flex;gap:8px;padding:3px 0;border-bottom:1px dashed var(--line);
+  font-family:var(--mono);font-size:11.5px}
+.entry:last-child{border-bottom:0}
+.entry .r{flex:0 0 40px;color:var(--ghost);white-space:nowrap}
+.entry .c{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;color:var(--dim)}
+.entry .cwrap{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+details.sub{margin:1px 0}
+details.sub>summary{cursor:pointer;list-style:none;display:flex;gap:6px;align-items:baseline;
+  color:var(--dim);font-size:11px}
+details.sub>summary::-webkit-details-marker{display:none}
+/* 标签不许被挤：这一行窄的时候只有「摘要」该让步。以前两个都可缩，
+   长结果一来浏览器就把「结果」压成一列，竖着写「结 / 果」。
+   摘要里再分两格：预览可以被省略号吃掉，字数不缩——「… 4…」看不出是 4 还是 44。 */
+details.sub>summary .sl{flex:none;white-space:nowrap;color:var(--fg2)}
+details.sub>summary .sh{flex:1;min-width:0;display:flex;gap:6px;align-items:baseline;
+  color:var(--ghost)}
+details.sub>summary .sh .sp{min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+details.sub>summary .sh .sz{flex:none;font-weight:400;white-space:nowrap}
+details.sub .sb{padding:4px 0 2px 8px;border-left:2px solid var(--line);
+  white-space:pre-wrap;word-break:break-word;color:var(--dim);font-size:11px}
+.r.user{color:var(--ok)} .r.assistant{color:var(--you)} .r.tool{color:var(--tool)}
+.r.note{color:var(--warn)}
+.mini{background:transparent;border:1px solid var(--line);color:var(--dim);
+  border-radius:7px;padding:3px 10px;font:11.5px var(--sans);cursor:pointer;margin-top:6px}
+.mini:hover{color:var(--fg2);border-color:var(--line2)}
+.chips{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0 12px}
+.chips button{background:transparent;border:1px solid transparent;color:var(--faint);
+  border-radius:8px;padding:3px 10px;font:12.5px var(--sans);cursor:pointer}
+.chips button:hover{color:var(--fg2)}
+.chips button.on{background:var(--field);border-color:var(--line2);color:var(--fg)}
+.rst{background:none;border:0;color:var(--you);font:inherit;font-size:11.5px;
+  cursor:pointer;padding:0}
+.rst:hover{text-decoration:underline}
+.hist{display:flex;gap:10px;font-size:11.5px;font-family:var(--mono);
+  color:var(--faint);padding:4px 0;border-bottom:1px solid var(--line)}
+.hist b{color:var(--fg2);font-weight:500}
+.hist span:first-child{color:var(--ghost);flex:0 0 128px}
+.hint{color:var(--faint);font-size:11.5px;line-height:1.5}
+#scrim{position:fixed;inset:0;background:rgba(0,0,0,.45);opacity:0;pointer-events:none;
+  transition:opacity .18s;z-index:4}
+#scrim.on{opacity:1;pointer-events:auto}
+
+#login{position:fixed;inset:0;background:rgba(10,10,11,.95);display:none;
+  align-items:center;justify-content:center;z-index:9}
+#login .box{background:var(--panel);border:1px solid var(--line2);border-radius:16px;
+  padding:22px;width:340px}
+#login input{width:100%;margin:10px 0;background:var(--bg);border:1px solid var(--line2);
+  color:var(--fg);border-radius:9px;padding:9px 12px;font:inherit}
+#login button{width:100%;background:var(--fg);border:0;color:var(--bg);border-radius:9px;
+  padding:9px;font:inherit;font-weight:600;cursor:pointer}
+@media (max-width:860px){#side{display:none}}
+/* 手机宽度：顶栏那几个药丸会互相挤，「对话」被折成两行。窄屏就收紧、去掉重复的
+   状态细节（「在等：任何动静」下面那行已经说了），模型名超长截断。 */
+@media (max-width:600px){
+  #top{padding:8px 12px;gap:6px;font-size:12.5px}
+  #top .tabs{gap:12px;white-space:nowrap;flex:none}
+  #top .tabs span{padding-bottom:8px;margin-bottom:-9px;white-space:nowrap}
+  #top .right{gap:6px;min-width:0}
+  #top .right .pill{padding:2px 7px;font-size:11px;white-space:nowrap}
+  #h-detail{display:none}
+  /* 顶栏那个模型药丸在窄屏只够写一半，会把 flash / reasoner 这类区分度截掉；
+     底下状态行本来就写着完整模型名，把它变成入口。 */
+  /* 模型名留在「在等」旁边：窄屏只给 92px，超出省略（完整名在 title 里） */
+  #h-model{display:block;max-width:92px;overflow:hidden;text-overflow:ellipsis}
+  .pill.mbtn{max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .iconbtn{width:24px;height:24px;flex:none}
+  #statusline{overflow:hidden;white-space:nowrap}
+  /* 窄屏放不下三段：只留步数和 token，命中率在宽屏才看 */
+  .wrap{padding:0 14px}
+  #bottom{padding:0 14px 16px}
+}
+</style>
+</head>
+<body>
+
+<aside id="side">
+  <div class="brand"><i></i><span id="s-name">palimpsest</span></div>
+  <button class="new" id="new-ctx">上下文</button>
+
+  <div class="lab">上下文</div>
+  <div class="stat"><span>当前块</span><b id="s-block">0</b></div>
+  <div class="meter" id="m-block"><i></i></div>
+  <div class="stat"><span>整次请求</span><b id="s-ctx">0</b></div>
+  <div class="meter" id="m-ctx"><i></i></div>
+  <div class="foot" id="s-foot">—</div>
+</aside>
+
+<div id="main">
+  <div id="top">
+    <div class="tabs"><span class="on" id="tab-chat">对话</span><span id="tab-ctx">上下文</span><span id="tab-graph">图</span><span id="tab-set">设置</span></div>
+    <div class="right">
+      <span class="pill"><span class="dot" id="h-dot"></span> <span id="h-status">—</span></span>
+      <span class="pill" id="h-detail"></span>
+      <button class="pill mbtn" id="h-model" title="换模型">—</button>
+      <button class="iconbtn" id="theme" title="切换深色/浅色">☾</button>
+    </div>
+  </div>
+
+  <div id="thread"><div id="draft" style="display:none"></div><div class="wrap"><div class="empty" id="empty">还没有记录。</div></div></div>
+
+  <div id="bottom">
+    <div class="composer">
+      <div class="gwrap">
+        <div class="gutter" id="gutter"><div class="gin" id="gutter-in"><div class="n">1</div></div></div>
+        <textarea id="say" rows="1" placeholder="说点什么…"></textarea>
+      </div>
+      <button class="send" id="send" title="发送" aria-label="发送">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/>
+          <path d="m5 12 7-7 7 7"/></svg>
+      </button>
+    </div>
+    <div id="statusline">
+      <span class="spin" id="st-steps"></span><span class="sep">·</span>
+      <span class="spin" id="st-tokens"></span><span class="sep">·</span>
+      <span class="spin" id="st-hit"></span>
+    </div>
+  </div>
+</div>
+<div id="mirror" aria-hidden="true"></div>
+
+<div id="picker">
+  <div class="pbox">
+    <div class="phead"><b id="p-title">选模型</b><span id="p-note"></span>
+      <span style="flex:1"></span><button id="p-close">关</button></div>
+    <div class="pbody" id="p-body"></div>
+  </div>
+</div>
+
+<div id="scrim"></div>
+<aside id="drawer">
+  <div class="dhead"><b>上下文</b><span style="color:var(--ghost)" id="d-sub"></span>
+    <span style="flex:1"></span><button class="band" id="close-ctx">收起</button></div>
+  <div class="dbody" id="d-body"></div>
+</aside>
+
+<div id="settings">
+  <div class="shead">
+    <b>设置</b>
+    <span style="color:var(--faint);font-size:11.5px">参数和提示词都是改完就生效；只有改过代码才需要重启</span>
+    <span style="flex:1"></span>
+    <button id="set-save">保存并生效</button>
+    <button id="set-restart">重启进程</button>
+    <button id="set-close">收起</button>
+  </div>
+  <div class="sbody"><div class="sinner" id="set-body"></div></div>
+</div>
+<div id="graphview">
+  <div class="ghead">
+    <b>事件图</b><span id="g-sub" style="color:var(--faint);font-size:11.5px"></span>
+    <span style="flex:1"></span>
+    <button id="g-reload">重画</button>
+    <button id="g-close">收起</button>
+  </div>
+  <iframe id="g-frame" title="事件图"></iframe>
+</div>
+<div id="toast"></div>
+<div id="login"><div class="box">
+  <div style="font-weight:600">需要令牌</div>
+  <div style="color:var(--dim);font-size:12px;margin-top:4px">在服务器的
+    <code>data/loop/web-token</code></div>
+  <input id="token" type="password" placeholder="粘贴令牌">
+  <button id="into">进去</button>
+</div></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const S = {token: localStorage.getItem("palimpsest.token") || "",
+  since: "0:0", step: 0, lastStep: -1, pinned: true, sending: false, models: null,
+  usage: new Map(), calls: new Map(), ctxAt: 0, cache: null, statusKind: ""};
+
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;");
+function k(n) {
+  n = Number(n || 0);
+  if (n < 1000) return String(n);
+  if (n < 1e6) return (n / 1000).toFixed(1) + "k";
+  return (n / 1e6).toFixed(2) + "M";
+}
+const hhmmss = (ts) => String(ts || "").slice(11, 19);
+
+/* ── 主题 ─────────────────────────────────────────────────────────────── */
+/* 存在 localStorage：跟着系统（auto）或钉死浅/深。切换只改 <html data-theme>，
+   CSS 那边整套变量换一遍，别处不用知道。 */
+const THEME_KEY = "palimpsest.theme";
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+const themeMode = () => localStorage.getItem(THEME_KEY) || "auto";
+function isDark() {
+  const mode = themeMode();
+  return mode === "dark" || (mode === "auto" && darkQuery.matches);
+}
+function applyTheme() {
+  const dark = isDark();
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  // 手机壳（`:webview` 那个 APK）给系统栏让位，那一条是它自己的窗口底色，
+  // 页面换主题得告诉它一声，不然顶上会留一条对不上的黑边。浏览器里没有这个对象。
+  if (window.palimpsestShell && window.palimpsestShell.theme) {
+    window.palimpsestShell.theme(dark);
+  }
+  const btn = $("theme");
+  if (btn) {
+    btn.textContent = dark ? "☀" : "☾";
+    btn.title = dark ? "切到浅色" : "切到深色";
+  }
+}
+function setTheme(mode) {
+  if (mode === "auto") localStorage.removeItem(THEME_KEY);
+  else localStorage.setItem(THEME_KEY, mode);
+  applyTheme();
+  if (SET_DATA && $("settings").classList.contains("open")) renderSettings(SET_DATA);
+}
+darkQuery.addEventListener("change", applyTheme);
+applyTheme();
+$("theme").onclick = () => setTheme(isDark() ? "light" : "dark");
+
+async function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({"Authorization": "Bearer " + S.token}, opts.headers || {});
+  const res = await fetch(path, opts);
+  if (res.status === 401) { $("login").style.display = "flex"; throw new Error("401"); }
+  if (!res.ok) {
+    // 服务端把原因放在 {"error": …} 里；不读出来，界面上就只剩一个 HTTP 400，
+    // 谁知道是哪一项不合法。
+    let why = "";
+    try { why = String((await res.json()).error || ""); } catch (e) { }
+    throw new Error(why || ("HTTP " + res.status));
+  }
+  return res.json();
+}
+const wrap = () => { const w = document.createElement("div"); w.className = "wrap"; return w; };
+
+/* ── 时间线 ───────────────────────────────────────────────────────────── */
+function divider(step, ts) {
+  const u = S.usage.get(step);
+  const bits = ["第 " + step + " 步", hhmmss(ts)];
+  if (u) {
+    bits.push("输入 " + k(u.prompt));
+    if (u.prompt) bits.push("命中 " + Math.round(100 * u.cache_hit / u.prompt) + "%");
+    if (u.completion) bits.push("输出 " + k(u.completion));
+  }
+  const d = document.createElement("div");
+  d.className = "divider";
+  d.textContent = bits.join(" · ");
+  return d;
+}
+
+/* 删掉一条之后屏幕也要跟着退：一步删空了，连它头上那行「第 N 步」一起收掉；
+   一条都不剩就把「还没有记录」放回去。 */
+function dropEntry(host) {
+  const wrapEl = host.parentElement;
+  const above = host.previousElementSibling;
+  const below = host.nextElementSibling;
+  const head = above && above.classList.contains("divider") ? above : null;
+  const orphan = head && (!below || below.classList.contains("divider"));
+  host.remove();
+  if (orphan) {
+    head.remove();
+    S.lastStep = -1;
+  }
+  if (wrapEl && !wrapEl.querySelector(".eitem")) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.id = "empty";
+    empty.textContent = "还没有记录。";
+    wrapEl.appendChild(empty);
+  }
+}
+
+function delBtn(item) {
+  const b = document.createElement("button");
+  b.className = "del";
+  b.textContent = "✕";
+  b.title = "删掉这条（连它的工具结果一起）；只删记录，不撤回别的";
+  b.onclick = async (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    if (!confirm("删掉这一条记录？\n\n" +
+      "只删对话里的这一行（连它的工具结果一起）：\n" +
+      "· 它当时写进记忆的笔记还在；\n" +
+      "· 已经压进旧段的摘要改不了（那些块整体是只读的）；\n" +
+      "· 输入框下面那行会跟着退回去；设置里的总账不退（钱已经花了）。\n\n" +
+      "下一步起它就不再看到这条。")) return;
+    try {
+      await api("/entries?block=" + item.block + "&seq=" + item.seq,
+        {method: "DELETE"});
+      const host = b.closest(".eitem");
+      if (host) dropEntry(host);
+      toast("已删除，下一步就用新的记录");
+    } catch (e) { alert("删不了：" + e.message); }
+  };
+  return b;
+}
+
+function addEntry(item) {
+  const e = $("empty"); if (e) e.remove();
+  const box = $("thread");
+  let w = box.lastElementChild;
+  if (!w || !w.classList.contains("wrap")) { w = wrap(); box.appendChild(w); }
+
+  // 只有「真说了话」或「对方说话」的步才画分割线。纯工具步（一步一个 remember）
+  // 并进上一条，不然一串工具调用会把界面撑成一堆「第 N 步」。
+  const speaks = item.role === "user" ||
+    (item.role === "assistant" && String(item.text || "").trim().length > 0);
+  if (item.step && item.step !== S.lastStep) {
+    S.lastStep = item.step;
+    if (speaks) w.appendChild(divider(item.step, item.ts));
+  }
+
+  const host = document.createElement("div");
+  host.className = "eitem";
+  let paired = false;
+
+  if (item.role === "user") {
+    const row = document.createElement("div");
+    row.className = "row user";
+    row.innerHTML = '<div class="body">' + esc(item.text) + "</div>";
+    host.appendChild(row);
+  } else if (item.role === "note") {
+    const d = document.createElement("div");
+    d.className = "sysnote";
+    d.textContent = item.text;
+    host.appendChild(d);
+  } else if (item.role === "tool") {
+    const call = S.calls.get(item.call_id || "");
+    const body = document.createElement("div");
+    body.className = "fbody";
+    body.textContent = String(item.text || "");
+    paired = !!call;
+    if (call) {
+      call.appendChild(body);
+    } else {
+      const d = document.createElement("details");
+      d.className = "frow";
+      d.innerHTML = '<summary><span class="ico">≡</span><span class="ttl">结果</span>' +
+        "</summary>";
+      d.appendChild(body);
+      host.appendChild(d);
+    }
+  } else {
+    if (item.meta && item.meta.think) {
+      const d = document.createElement("details");
+      d.className = "frow";
+      const line = String(item.meta.think).split("\n")[0].trim();
+      d.innerHTML = '<summary><span class="ico">◌</span><span class="ttl">思考</span>' +
+        '<span class="sdot"></span><span class="sum">' + esc(line) + "</span></summary>";
+      const body = document.createElement("div");
+      body.className = "fbody";
+      body.textContent = String(item.meta.think);
+      d.appendChild(body);
+      host.appendChild(d);
+    }
+    for (const c of item.calls || []) {
+      const fn = c.function || {};
+      const d = document.createElement("details");
+      d.className = "frow";
+      d.innerHTML = '<summary><span class="ico">›</span><span class="ttl">' +
+        esc(fn.name) + '</span><span class="sdot"></span><span class="sum">' +
+        esc(fn.arguments || "") + "</span></summary>";
+      S.calls.set(c.id || "", d);
+      host.appendChild(d);
+    }
+    if (item.text) {
+      const row = document.createElement("div");
+      row.className = "row assistant";
+      row.innerHTML = '<div class="body">' + esc(item.text) + "</div>";
+      host.appendChild(row);
+    }
+  }
+
+  // 已经并进调用卡里的结果，删的时候跟着调用一起走，别单给一个按钮。
+  if (!paired) host.appendChild(delBtn(item));
+  w.appendChild(host);
+  if (S.pinned) box.scrollTop = box.scrollHeight;
+}
+
+
+/* ── 抽屉 ─────────────────────────────────────────────────────────────── */
+function item(title, tag, meta, text) {
+  const d = document.createElement("details");
+  d.className = "item";
+  d.dataset.key = "item:" + title;
+  d.innerHTML = '<summary><span class="tag">' + esc(title) + "</span>" +
+    (tag ? '<span class="meta">' + esc(tag) + "</span>" : "") +
+    (meta ? '<span class="meta">' + esc(meta) + "</span>" : "") +
+    '</summary><div class="body">' + esc(text) + "</div>";
+  return d;
+}
+
+function renderContext(c) {
+  S.cache = c;
+  const box = $("d-body");
+  // 抽屉每 2.5 秒拉一次：只有内容真的变了才重画。整棵 DOM 重建会让展开状态、
+  // 滚动位置、正在读的那一段都跳回去——"点开几秒又收起来"就是这么来的。
+  const sig = JSON.stringify([
+    c.sink.chars, c.sink.tokens, c.context_tokens,
+    c.current.count, c.current.tokens, c.previous.count, c.previous.tokens,
+    c.bands.map((b) => [b.level, b.chars, b.tokens]),
+  ]);
+  if (sig === S.ctxSig && box.childElementCount) {
+    $("d-sub").textContent = "整次请求 " + k(c.context_tokens);
+    return;
+  }
+  S.ctxSig = sig;
+  // 抽屉每 2.5 秒重画一次：先把哪些块是展开的、滚到哪儿记下来，画完再恢复，
+  // 否则点开「系统提示」几秒后自己就收起来了。
+  const opened = new Set();
+  const inner = new Map();          // data-key → {top, atBottom}
+  const subs = new Set();           // 展开过的小块（工具结果/调用）
+  box.querySelectorAll("details.sub").forEach((node) => {
+    if (node.open) subs.add(node.dataset.sub || "");
+  });
+  box.querySelectorAll("details").forEach((node) => {
+    if (node.open) opened.add(node.dataset.key || "");
+    const key = node.dataset.key || "";
+    const body = key ? node.querySelector(".body") : null;
+    if (body) {
+      inner.set(key, {
+        top: body.scrollTop,
+        atBottom: body.scrollHeight - body.scrollTop - body.clientHeight < 8,
+      });
+    }
+  });
+  const scroll = box.scrollTop;
+  const firstPaint = !S.ctxSig;
+  box.innerHTML = "";
+  $("d-sub").textContent = "整次请求 " + k(c.context_tokens);
+
+  const s1 = document.createElement("div");
+  s1.className = "sec";
+  s1.innerHTML = "<h3>占用</h3>" +
+    "<div class=\"stat\"><span>当前块</span><b>" + k(c.current.tokens) + " / " +
+    k(c.limits.block_tokens) + "</b></div>" +
+    "<div class=\"meter\"><i style=\"width:" +
+    Math.min(100, 100 * c.current.tokens / (c.limits.block_tokens || 1)) + "%\"></i></div>" +
+    "<div class=\"stat\"><span>整次请求</span><b>" + k(c.context_tokens) + " / " +
+    k(c.limits.context_budget) + "</b></div>" +
+    "<div class=\"meter\"><i style=\"width:" +
+    Math.min(100, 100 * c.context_tokens / (c.limits.context_budget || 1)) + "%\"></i></div>";
+  box.appendChild(s1);
+
+  const s2 = document.createElement("div");
+  s2.className = "sec";
+  s2.innerHTML = "<h3>旧段</h3>";
+  if (!c.bands.length) {
+    const p = document.createElement("div");
+    p.className = "stat"; p.textContent = "还没有压缩过的段。";
+    s2.appendChild(p);
+  }
+  for (const b of c.bands) {
+    s2.appendChild(item("第 " + b.level + " 段", (b.start_ts || "").slice(5, 16),
+      b.chars + " 字 · " + k(b.tokens), b.text));
+  }
+  box.appendChild(s2);
+
+  /* 抽屉里的小折叠块：一条工具结果默认收起，点开才展开全文。
+     键用库里的行号（/context 带 seq）；万一没有就退到「本块内第几条」，
+     总比所有折叠块共用一个键强——那会让点开一个、别的跟着开。 */
+  const fold = (label, hint, text, kind, seq) => {
+    const h = typeof hint === "string" ? {head: hint, size: ""} : hint;
+    const sub = document.createElement("details");
+    sub.className = "sub";
+    sub.dataset.sub = kind + ":" + String(seq == null ? "" : seq);
+    sub.innerHTML = '<summary><span class="sl">' + esc(label) + "</span>" +
+      '<span class="sh"><span class="sp">' + esc(h.head) + "</span>" +
+      (h.size ? '<b class="sz">' + esc(h.size) + "</b>" : "") +
+      "</span></summary>" +
+      '<div class="sb">' + esc(text) + "</div>";
+    return sub.outerHTML;
+  };
+
+  /* 摘要一行：预览 + 字数。短的就整句给，别加省略号——「等了 3 分钟，对方说话了。… 14 字」
+     会让人以为后面还截掉了；只有真截了才点三个点。 */
+  const strLenHint = (text) => {
+    const raw = String(text || "");
+    if (!raw) return {head: "空的", size: ""};
+    const flat = raw.replace(/\s+/g, " ").trim();
+    const head = flat.slice(0, 24);
+    return {head: flat.length > head.length ? head + "…" : head,
+      size: raw.length + " 字"};
+  };
+
+  const block = (title, data, opened) => {
+    const sec = document.createElement("div");
+    sec.className = "sec";
+    sec.innerHTML = "<h3>" + esc(title) + "</h3>";
+    if (!data.count) {
+      const p = document.createElement("div");
+      p.className = "stat"; p.textContent = "空的。";
+      sec.appendChild(p); return sec;
+    }
+    const d = document.createElement("details");
+    d.className = "item"; d.open = !!opened;
+    d.dataset.key = "block:" + title;
+    d.innerHTML = '<summary><span class="tag">' + data.count + " 条</span>" +
+      '<span class="meta">' + k(data.tokens) + " token</span></summary>" +
+      '<div class="body"></div>';
+    const body = d.querySelector(".body");
+    /* 工具结果并进它那一次调用：库里是「一条带 tool_calls 的 assistant」+ 若干条
+       tool，这里按 call_id 配对。不并的话一块里一半的行都是「结果」，读起来像日志。 */
+    const resultOf = new Map();
+    for (const e of data.entries) {
+      if (e.role === "tool" && e.call_id) resultOf.set(e.call_id, e);
+    }
+    const taken = new Set();
+    for (const e of data.entries) {
+      for (const c of (e.calls || [])) {
+        const hit = resultOf.get(c.id || "");
+        if (hit) taken.add(hit.seq);
+      }
+    }
+    for (const e of data.entries) {
+      if (e.role === "tool" && taken.has(e.seq)) continue;   // 已经挂在调用那行里
+      const row = document.createElement("div");
+      row.className = "entry";
+      const tag = '<span class="r ' + esc(e.role) + '">' +
+        esc(e.role.slice(0, 4)) + "</span>";
+      const calls = e.calls || [];
+      const parts = [];
+      // 调用连同结果折成一行：参数和输出都上千字，展开能把块撑很长
+      if (calls.length) {
+        const names = calls.map((c) => (c.function || {}).name || "?").join("、");
+        const units = [];
+        let chars = 0;
+        let first = "";
+        for (const c of calls) {
+          const fn = c.function || {};
+          const hit = resultOf.get(c.id || "");
+          const text = String((hit || {}).text || "");
+          if (hit) {
+            chars += text.length;
+            if (!first) first = text.replace(/\s+/g, " ").trim();
+          }
+          // 一次调用 + 它的结果算一块，块之间空一行：不空的话结果的正文跟参数黏在一起
+          units.push("→ " + (fn.name || "") + " " + (fn.arguments || "") + "\n" +
+            (hit ? (text || "（空）") : "（还没回）"));
+        }
+        const head = first ? first.slice(0, 20) + (first.length > 20 ? "…" : "") : "";
+        parts.push(fold("调 " + calls.length + " 次",
+          chars ? {head: names + " · " + head, size: chars + " 字"} : names,
+          units.join("\n\n"), "call", e.seq));
+      }
+      if (e.role === "tool") {
+        parts.push(fold("结果", strLenHint(e.text || ""), e.text || "（空）",
+          "result", e.seq));
+      } else if (e.text) {
+        parts.push('<span class="c">' + esc(e.text) + "</span>");
+      }
+      row.innerHTML = tag + '<span class="cwrap">' + parts.join("") + "</span>";
+      body.appendChild(row);
+    }
+    sec.appendChild(d);
+    return sec;
+  };
+  box.appendChild(block("上一块（原文）", c.previous, false));
+  const currentSec = block("当前块（在写）", c.current, true);
+  box.appendChild(currentSec);
+
+  const s3 = document.createElement("div");
+  s3.className = "sec";
+  s3.innerHTML = "<h3>sink</h3>";
+  s3.appendChild(item("系统提示", "", c.sink.chars + " 字", c.sink.text));
+  box.appendChild(s3);
+
+  // 她自己写的那段：常驻在 system 里；平时不提，隔一阵子自动重写一次
+  const s4 = document.createElement("div");
+  s4.className = "sec";
+  s4.innerHTML = "<h3>自我描述</h3>";
+  const self = c.persona || {text: "", chars: 0, limit: 0, at: ""};
+  if (self.text) {
+    s4.appendChild(item("她自己写的", self.at || "",
+      self.chars + " / " + self.limit + " 字", self.text));
+    const gap = document.createElement("div");
+    gap.className = "stat";
+    gap.textContent = "下次重写：" + (self.pending || 0) + " / " + (self.min_chars || 0) +
+      " 字新材料 · 隔 " + (self.hours || 0) + " 小时一次 · 整理时最多喂 " +
+      ((self.feed_chars || 0) === 0 ? "全部" : (self.feed_chars || 0) + " 字");
+    s4.appendChild(gap);
+    const reset = document.createElement("button");
+    reset.className = "mini";
+    reset.textContent = "清空";
+    reset.onclick = async () => {
+      if (!confirm("清空她自己写的那段描述？")) return;
+      try {
+        await api("/persona", {method: "POST", body: JSON.stringify({reset: true})});
+        S.ctxSig = "";
+        renderContext(await api("/context"));
+      } catch (e) { alert("清空失败：" + e.message); }
+    };
+    s4.appendChild(reset);
+  } else {
+    const p = document.createElement("div");
+    p.className = "stat";
+    p.textContent = "她还没写过。到点（默认每天一次）会自己写一版。";
+    s4.appendChild(p);
+  }
+  box.appendChild(s4);
+
+  box.querySelectorAll("details.sub").forEach((node) => {
+    if (subs.has(node.dataset.sub || "")) node.open = true;
+  });
+  box.querySelectorAll("details").forEach((node) => {
+    const key = node.dataset.key || "";
+    if (opened.has(key)) node.open = true;
+    const body = key ? node.querySelector(".body") : null;
+    if (!body) return;
+    const before = inner.get(key);
+    if (!before) {
+      body.scrollTop = body.scrollHeight;            // 头一次：停在最新（底部）
+    } else if (before.atBottom) {
+      body.scrollTop = body.scrollHeight;            // 原来就在底：跟着新内容走
+    } else {
+      body.scrollTop = before.top;                   // 在读旧的：原地不动
+    }
+  });
+  if (firstPaint) {
+    // 第一次画（或刚打开抽屉）：直接落到「当前块（在写）」的末尾——那儿才是最新的
+    const target = currentSec.querySelector("details");
+    box.scrollTop = target
+      ? Math.max(0, target.offsetTop + target.offsetHeight - box.clientHeight)
+      : box.scrollHeight;
+  } else {
+    box.scrollTop = scroll;
+  }
+}
+
+/* ── 轮询 ─────────────────────────────────────────────────────────────── */
+function paintDraft(st) {
+  const list = $("thread");
+  let holder = $("draft");
+  if (!holder && list) {
+    // 页面重载 / 切标签会把 #draft 清掉：重建一个挂在最后，别让流式就此失灵
+    holder = document.createElement("div");
+    holder.id = "draft";
+    holder.style.display = "none";
+    list.appendChild(holder);
+  }
+  if (!holder) return;
+  if (list && holder.parentNode !== list || list.lastElementChild !== holder) {
+    list.appendChild(holder);          // 永远挂在最后（历史行是追加进去的）
+  }
+  const text = (st.draft && st.draft.text) || "";
+  const think = (st.draft && st.draft.think) || "";
+  if (!text && !think) {
+    holder.innerHTML = "";
+    holder.style.display = "none";
+    return;
+  }
+  holder.style.display = "block";
+  const line = think ? String(think).split("\n").filter((row) => row.trim()).pop() || "" : "";
+  holder.innerHTML =
+    (think ? '<div class="dthink"><span class="ico">◌</span> 思考中 · ' +
+      esc(String(line).slice(-120)) + "</div>" : "") +
+    '<div class="row assistant draft"><div class="body">' +
+    (text ? esc(text) : "") +
+    (text ? '<span class="caret">▍</span>' : "") +
+    (!text && !think ? '<span class="thinking">（在思考…）</span>' : "") +
+    "</div></div>";
+  if (S.pinned) list.scrollTop = list.scrollHeight;
+}
+
+function paint(st) {
+  paintDraft(st);
+  $("s-name").textContent = st.name || "palimpsest";
+  const kinds = {thinking: "在想", waiting: "在等", parked: "挂着", retry: "重试", idle: "闲"};
+  S.statusKind = (st.status && st.status.kind) || "";
+  $("h-status").textContent = kinds[st.status.kind] || "—";
+  $("h-detail").textContent = st.status.detail || "";
+  S.models = st.models || S.models;
+  $("h-dot").className = "dot " + (st.status.kind || "");
+
+  /* 输入框下面这三个数**跟着记录走**：只算还挂在记录上的步，删一条就退一点。
+     真实总账（不退）在设置里，见「用量总账」。 */
+  const live = st.live || st.totals || {};
+  $("s-block").textContent = k(st.current_tokens) + " / " + k(st.block_tokens);
+  $("s-ctx").textContent = k(st.context_tokens) + " / " + k(st.context_budget);
+  $("m-block").firstElementChild.style.width =
+    Math.min(100, 100 * st.current_tokens / (st.block_tokens || 1)) + "%";
+  $("m-ctx").firstElementChild.style.width =
+    Math.min(100, 100 * st.context_tokens / (st.context_budget || 1)) + "%";
+  $("s-foot").textContent = "压缩 " + st.compressions + " 次";
+  const shortModel = String(st.model || "—").replace(/^deepseek-/, "");
+  $("h-model").textContent = shortModel;
+  const mm = st.models || {};
+  $("h-model").title = "对话 " + (mm.chat || "—") +
+    " · 摘要 " + (mm.summary || "—") +
+    " · 嵌入 " + (mm.embed || "—") + (mm.embed_ok ? "" : "（不可用）");
+  $("st-steps").textContent = (live.steps || 0) + " 步";
+  $("st-tokens").textContent = k(live.total) + " tok";
+  $("st-hit").textContent = "命中 " + Math.round(100 * (live.hit_rate || 0)) + "%";
+}
+
+async function poll() {
+  try {
+    const [feed, st] = await Promise.all([
+      api("/feed?since=" + encodeURIComponent(S.since) + "&step=" + S.step),
+      api("/state"),
+    ]);
+    for (const u of feed.steps) S.usage.set(u.step, u);
+    if (feed.steps.length) S.step = feed.steps[feed.steps.length - 1].step;
+    for (const e of feed.entries) addEntry(e);
+    if (feed.entries.length) S.since = feed.cursor.block + ":" + feed.cursor.seq;
+    paint(st);
+    const empty = $("empty");
+    if (empty && empty.textContent !== "还没有记录。") empty.textContent = "还没有记录。";
+    if ($("drawer").classList.contains("open") && Date.now() - S.ctxAt > 2500) {
+      S.ctxAt = Date.now();
+      renderContext(await api("/context"));
+    }
+  } catch (e) { }
+}
+
+/* ── 发送 ─────────────────────────────────────────────────────────────── */
+/* 输入框学 App 的做法：行号按逻辑行编、回车只换行、只有按钮能发。
+   行数靠一面镜像墙量（textarea 自己不告诉你有几行）：把同样的文本塞进
+   同样宽/同样字体的隐藏 div，逐段量 span 的 offsetTop 就知道哪个视觉行是
+   某个逻辑行的开头 —— 折行的续行留空号，和编辑器一致。 */
+const LINE_H = 22, MAX_LINES = 5, MAX_TEXT_H = LINE_H * MAX_LINES;
+const ta = $("say"), gutter = $("gutter"), gin = $("gutter-in"), mirror = $("mirror");
+let drawnLines = 0;
+
+function refreshSend() {
+  $("send").disabled = S.sending || !ta.value.trim();
+}
+
+function syncGutter() {
+  gin.style.transform = "translateY(" + (-ta.scrollTop) + "px)";
+}
+
+function measureComposer() {
+  if (!ta.clientWidth) return;
+  const logical = ta.value.split("\n");
+  mirror.style.width = ta.clientWidth + "px";
+  mirror.textContent = "";
+  logical.forEach((line, index) => {
+    const span = document.createElement("span");
+    span.textContent = line || "\u200b";
+    mirror.appendChild(span);
+    if (index < logical.length - 1) mirror.appendChild(document.createTextNode("\n"));
+  });
+  const total = Math.max(1, Math.round(mirror.scrollHeight / LINE_H));
+  if (total !== drawnLines) {
+    drawnLines = total;
+    const starts = new Set();
+    for (const span of mirror.children) {
+      if (span.tagName === "SPAN") starts.add(Math.round(span.offsetTop / LINE_H));
+    }
+    let n = 0, html = "";
+    for (let i = 0; i < total; i += 1) {
+      if (starts.has(i)) { n += 1; html += '<div class="n">' + n + "</div>"; }
+      else html += '<div class="n"></div>';
+    }
+    gin.innerHTML = html;
+    const height = Math.max(LINE_H, Math.min(MAX_TEXT_H, total * LINE_H));
+    ta.style.height = height + "px";
+    gutter.style.height = height + "px";
+  }
+  syncGutter();
+  refreshSend();
+}
+
+async function send() {
+  const text = ta.value.trim();
+  if (!text || S.sending) return;
+  S.sending = true;
+  const btn = $("send");
+  const icon = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner"></span>';
+  refreshSend();
+  try {
+    await api("/say", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text})});
+    ta.value = "";
+    drawnLines = 0;
+    measureComposer();
+    S.pinned = true;
+    poll();
+  } catch (e) {
+    toast("没发出去：" + e.message);
+  }
+  S.sending = false;
+  btn.innerHTML = icon;
+  refreshSend();
+  ta.focus();
+}
+
+$("send").onclick = send;
+ta.addEventListener("input", measureComposer);
+ta.addEventListener("scroll", syncGutter);
+window.addEventListener("resize", () => { drawnLines = 0; measureComposer(); });
+measureComposer();
+$("thread").addEventListener("scroll", () => {
+  const box = $("thread");
+  S.pinned = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+});
+function toggleDrawer(on) {
+  $("drawer").classList.toggle("open", on);
+  $("scrim").classList.toggle("on", on);
+}
+$("new-ctx").onclick = async () => {
+  toggleDrawer(true);
+  S.ctxSig = "";          // 每次打开都重画一次，好把你带到「当前块（在写）」
+  try { renderContext(await api("/context")); } catch (e) {}
+};
+$("close-ctx").onclick = () => toggleDrawer(false);
+$("tab-ctx").onclick = $("new-ctx").onclick;
+
+async function openGraph() {
+  $("graphview").classList.add("open");
+  $("g-sub").textContent = "正在画…";
+  try {
+    const res = await fetch("/graph", {headers: {"Authorization": "Bearer " + S.token}});
+    if (res.status === 401) { $("login").style.display = "flex"; return; }
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const html = await res.text();
+    // 图这页是独立的（iframe srcdoc），主题得显式给它：跟着网页这一侧走。
+    const now = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    $("g-frame").srcdoc = html.replace("<html", '<html data-theme="' + now + '"');
+    $("g-sub").textContent = "（" + Math.round(html.length / 1024) + " KB，数据已经带在这页里）";
+  } catch (e) {
+    $("g-sub").textContent = "画不出来：" + e.message;
+  }
+}
+$("tab-graph").onclick = openGraph;
+$("g-close").onclick = () => $("graphview").classList.remove("open");
+$("g-reload").onclick = openGraph;
+$("scrim").onclick = () => toggleDrawer(false);
+$("into").onclick = () => {
+  S.token = $("token").value.trim();
+  localStorage.setItem("palimpsest.token", S.token);
+  $("login").style.display = "none";
+  S.since = "0:0"; S.step = 0; S.lastStep = -1; S.calls.clear();
+  $("thread").innerHTML = '<div class="wrap"><div class="empty" id="empty">载入中…</div></div>';
+  poll();
+};
+/* ── 选模型 ───────────────────────────────────────────────────────────── */
+/* 顶栏那个模型按钮和设置里的「列表」都走这里：问 /models 要端点自己的清单，
+   挑一个填回去（设置里填进输入框，顶栏直接存）。 */
+const PICK = {kind: "chat", key: null};
+const pickName = (kind) => kind === "embed" ? "嵌入模型"
+  : (kind === "summary" ? "摘要模型" : "对话模型");
+
+async function openPicker(kind, key) {
+  PICK.kind = kind;
+  PICK.key = key;
+  $("p-title").textContent = pickName(kind);
+  $("p-note").textContent = "正在问端点…";
+  $("p-body").innerHTML = "";
+  $("picker").classList.add("open");
+  try { renderPicker(await api("/models?kind=" + kind)); }
+  catch (e) { renderPicker({ok: false, error: "拉不到：" + e.message, models: []}); }
+}
+
+function pickCurrent() {
+  if (PICK.key) {
+    const el = $("set-body").querySelector('[data-key="' + PICK.key + '"]');
+    return el ? el.value : "";
+  }
+  const mm = S.models || {};
+  return PICK.kind === "embed" ? (mm.embed || "") : (mm.chat || "");
+}
+
+function renderPicker(data) {
+  const box = $("p-body");
+  box.innerHTML = "";
+  $("p-note").textContent = data.ok ? (data.models.length + " 个") : "拉不到";
+  if (!data.ok) {
+    box.innerHTML = '<div class="perr">' + esc(data.error || "拉不到列表") + "</div>" +
+      '<div class="perr quiet">' + esc(data.url || "") + "</div>" +
+      '<div class="perr quiet">拉不到就直接在输入框里手写模型名。</div>';
+    return;
+  }
+  const current = pickCurrent();
+  for (const id of data.models) {
+    const row = document.createElement("div");
+    row.className = "mrow" + (id === current ? " on" : "");
+    row.innerHTML = "<span>" + esc(id) + '</span><span class="tag">' +
+      (id === current ? "在用" : "选用") + "</span>";
+    row.onclick = () => chooseModel(id);
+    box.appendChild(row);
+  }
+  if (!data.models.length) box.innerHTML = '<div class="perr">端点没给模型。</div>';
+}
+
+async function chooseModel(id) {
+  $("picker").classList.remove("open");
+  if (PICK.key) {
+    const el = $("set-body").querySelector('[data-key="' + PICK.key + '"]');
+    if (el) el.value = id;
+    // 选了就存：之前只填进输入框，人以为已经换了（"选了 deepseek-flash 还是 v4-flash"）
+    try {
+      await api("/settings", {method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({values: {[PICK.key]: id}})});
+      toast("已换成 " + id + "（立即生效）");
+      poll();
+      if ($("settings").classList.contains("open")) renderSettings(await api("/settings"));
+    } catch (e) {
+      toast("填好了但没存上：" + e.message);
+    }
+    return;
+  }
+  const field = PICK.kind === "embed" ? "embed_model"
+    : (PICK.kind === "summary" ? "summary_model" : "model");
+  try {
+    await api("/settings", {method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({values: {[field]: id}})});
+    toast("已换成 " + id);
+    poll();
+    if ($("settings").classList.contains("open")) renderSettings(await api("/settings"));
+  } catch (e) { toast("换不了：" + e.message); }
+}
+
+$("p-close").onclick = () => $("picker").classList.remove("open");
+$("picker").onclick = (ev) => {
+  if (ev.target.id === "picker") $("picker").classList.remove("open");
+};
+$("h-model").onclick = () => openPicker("chat", null);
+// 模型入口在顶栏（#h-model），底下状态行已经去掉了
+
+/* ── 设置 ─────────────────────────────────────────────────────────────── */
+let SET_FIELDS = [];
+let SET_DATA = null;
+let SET_GROUP = "";
+let TOAST_T = 0;
+function toast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("on");
+  clearTimeout(TOAST_T);
+  TOAST_T = setTimeout(() => el.classList.remove("on"), 2200);
+}
+
+function fmtVal(v) {
+  return Array.isArray(v) ? v.join(", ") : String(v);
+}
+
+function fieldRow(f, value, def, pending) {
+  const row = document.createElement("div");
+  row.className = "forg";
+  let ctl = "";
+  if (f.type === "bool") {
+    ctl = '<input type="checkbox" data-key="' + f.key + '"' + (value ? " checked" : "") + ">";
+  } else if (f.type === "select") {
+    ctl = '<select data-key="' + f.key + '">' + (f.options || []).map((option) =>
+      '<option value="' + esc(option) + '"' +
+      (option === value ? " selected" : "") + ">" + esc(option) + "</option>").join("") +
+      "</select>";
+  } else if (f.type === "ints") {
+    ctl = '<input type="text" data-key="' + f.key + '" value="' +
+      esc((value || []).join(", ")) + '">';
+  } else if (f.type === "text") {
+    const hint = (S.hints && S.hints[f.key]) || "";
+    ctl = '<input type="' + (f.secret ? "password" : "text") + '" data-key="' + f.key +
+      '" value="' + esc(value) + '"' +
+      (f.secret ? ' placeholder="' + esc(hint || "留空 = 不改") + '" autocomplete="off"' : "") + ">";
+  } else {
+    ctl = '<input type="number" step="' + (f.type === "float" ? "0.1" : "1") +
+      '" data-key="' + f.key + '" value="' + esc(value) + '">';
+  }
+  if (f.picker) {
+    ctl += '<button class="pick" data-pick="' + esc(f.key) + '" data-kind="' +
+      esc(f.picker) + '" title="从端点的模型列表里挑">列表</button>';
+  }
+  const changed = fmtVal(value) !== fmtVal(def);
+  const pendingNote = pending ? " · 已保存，待重启" : "";
+  row.innerHTML = '<div class="lab">' + esc(f.label) + '</div><div class="ctl">' +
+    '<div class="rowline">' + ctl + "</div>" +
+    '<div class="hint">' + esc(f.help || "") +
+    (f.secret && (S.hints && S.hints[f.key]) ? " · " + esc(S.hints[f.key]) : "") +
+    (changed
+      ? ' · <button class="rst" data-reset="' + f.key + '" data-def="' +
+        esc(fmtVal(def)) + '">恢复默认 ' + esc(fmtVal(def)) + "</button>"
+      : " · 默认 " + esc(fmtVal(def))) + pendingNote +
+    "</div></div>";
+  return row;
+}
+
+function renderSettings(data) {
+  SET_DATA = data;
+  SET_FIELDS = data.fields;
+  S.hints = Object.assign({}, data.hints || {});
+  const box = $("set-body");
+  box.innerHTML = "";
+
+  const sec0 = document.createElement("div");
+  sec0.className = "sec";
+  sec0.innerHTML = "<h3>外观</h3>";
+  const modeChips = document.createElement("div");
+  modeChips.className = "chips";
+  for (const pair of [["auto", "跟随系统"], ["light", "浅色"], ["dark", "深色"]]) {
+    const b = document.createElement("button");
+    b.textContent = pair[1];
+    b.className = themeMode() === pair[0] ? "on" : "";
+    b.onclick = () => setTheme(pair[0]);
+    modeChips.appendChild(b);
+  }
+  sec0.appendChild(modeChips);
+  box.appendChild(sec0);
+
+  const sec1 = document.createElement("div");
+  sec1.className = "sec";
+  sec1.innerHTML = "<h3>运行参数</h3>";
+  const chips = document.createElement("div");
+  chips.className = "chips";
+  if (!SET_GROUP) SET_GROUP = data.groups[0];
+  for (const g of data.groups) {
+    const b = document.createElement("button");
+    b.textContent = g;
+    b.className = g === SET_GROUP ? "on" : "";
+    b.onclick = () => { SET_GROUP = g; renderSettings(SET_DATA); };
+    chips.appendChild(b);
+  }
+  sec1.appendChild(chips);
+  for (const f of data.fields) {
+    if ((f.group || data.groups[0]) !== SET_GROUP) continue;
+    const cur = (data.stored && data.stored[f.key] !== undefined)
+      ? data.stored[f.key] : data.values[f.key];
+    const pending = (data.stored && data.stored[f.key] !== undefined) &&
+      fmtVal(cur) !== fmtVal(data.values[f.key]);
+    sec1.appendChild(fieldRow(f, cur, data.defaults[f.key], pending));
+  }
+  if (SET_GROUP === "记忆" && data.memory) {
+    const m = data.memory;
+    const line = document.createElement("div");
+    line.className = "hint";
+    line.style.padding = "10px 0 2px";
+    line.textContent = "嵌入服务：" + (m.embed_ok ? "可用" : "不可用") +
+      " · " + (m.embed_model || "—") + " · " + (m.embed_dim || "—") + " 维" +
+      (m.embed_host ? " · " + m.embed_host : "") +
+      (m.embed_ok ? "" : "（没有百炼的 key，recall 只能靠词面）");
+    sec1.appendChild(line);
+  }
+  box.appendChild(sec1);
+
+  /* 真账：`usage` 表全部。它不随删记录退（钱已经花了），所以和输入框下面那行
+     分开摆——那里只算还挂在记录上的步。 */
+  const eu = data.usage || {};
+  const today = eu.today || {};
+  const tot = eu.totals || {};
+  const secU = document.createElement("div");
+  secU.className = "sec";
+  secU.innerHTML = "<h3>用量总账</h3>";
+  for (const pair of [
+    ["今天", (today.steps || 0) + " 步 · 输入 " + k(today.prompt) +
+      " · 输出 " + k(today.completion) + " · 合计 " + k(today.total)],
+    ["累计", (tot.steps || 0) + " 步 · 合计 " + k(tot.total) +
+      " · 命中 " + Math.round(100 * (tot.hit_rate || 0)) + "% · 单次峰值 " +
+      k(tot.peak)],
+  ]) {
+    const row = document.createElement("div");
+    row.className = "hist";
+    row.innerHTML = "<span>" + esc(pair[0]) + "</span><b>" + esc(pair[1]) + "</b>";
+    secU.appendChild(row);
+  }
+  const note = document.createElement("div");
+  note.className = "hint";
+  note.style.padding = "6px 0 0";
+  note.textContent = "这是真账，删记录不退；输入框下面那一行只算还挂在记录上的步，删了就退。";
+  secU.appendChild(note);
+  box.appendChild(secU);
+
+  const sec2 = document.createElement("div");
+  sec2.className = "sec";
+  sec2.innerHTML = "<h3>提示词</h3>";
+  for (const p of data.prompts) {
+    const det = document.createElement("details");
+    det.className = "pblock";
+    det.innerHTML = '<summary>' + esc(p.label) +
+      '<span class="meta">' + (p.override ? "已覆盖" : "默认") + " · " +
+      esc(p.file) + '</span></summary><div class="pbody">' +
+      '<div class="desc">' + esc(p.desc) + '</div>' +
+      '<textarea data-pkey="' + esc(p.key) + '">' + esc(p.text) + "</textarea>" +
+      '<div class="acts"><button data-psave="' + esc(p.key) + '">保存这份</button>' +
+      '<button data-preset="' + esc(p.key) + '">恢复默认</button></div></div>';
+    sec2.appendChild(det);
+  }
+  box.appendChild(sec2);
+
+  const sec3 = document.createElement("div");
+  sec3.className = "sec";
+  sec3.innerHTML = "<h3>改动记录</h3>";
+  if (!data.history || !data.history.length) {
+    const p = document.createElement("div");
+    p.className = "hint";
+    p.textContent = "还没有改过。";
+    sec3.appendChild(p);
+  }
+  for (const h of (data.history || []).slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = "hist";
+    row.innerHTML = "<span>" + esc(h.ts || "") + "</span><b>" +
+      esc(h.label || h.key) + "</b><span>" + esc(fmtVal(h.from)) + " → " +
+      esc(fmtVal(h.to)) + "</span>";
+    sec3.appendChild(row);
+  }
+  box.appendChild(sec3);
+}
+async function openSettings() {
+  toggleDrawer(false);
+  $("settings").classList.add("open");
+  try { renderSettings(await api("/settings")); }
+  catch (e) { toast("读不到设置"); }
+}
+
+function collectValues() {
+  const values = {};
+  const kinds = {};
+  for (const f of SET_FIELDS) kinds[f.key] = f.type;
+  for (const el of $("set-body").querySelectorAll("[data-key]")) {
+    const key = el.getAttribute("data-key");
+    const type = kinds[key] || "text";
+    if (type === "bool") values[key] = el.checked;
+    else if (type === "select") values[key] = el.value;
+    else if (type === "ints") {
+      values[key] = el.value.split(",")
+        .map((s) => Number(s.trim())).filter((n) => !isNaN(n));
+    } else if (type === "text") values[key] = el.value.trim();
+    else values[key] = Number(el.value);
+  }
+  return values;
+}
+
+async function saveParams() {
+  try {
+    await api("/settings", {method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({values: collectValues()})});
+    toast("已生效");
+    renderSettings(await api("/settings"));
+  } catch (e) { toast("保存失败：" + e.message); }
+}
+
+$("set-body").addEventListener("click", async (ev) => {
+  const t = ev.target;
+  if (t.tagName !== "BUTTON") return;
+  const pick = t.getAttribute("data-pick");
+  if (pick) {
+    openPicker(t.getAttribute("data-kind") || "chat", pick);
+    return;
+  }
+  const resetField = t.getAttribute("data-reset");
+  if (resetField) {
+    const el = $("set-body").querySelector('[data-key="' + resetField + '"]');
+    if (el) {
+      const def = t.getAttribute("data-def") || "";
+      if (el.type === "checkbox") el.checked = def === "true";
+      else el.value = def;
+    }
+    return;
+  }
+  const save = t.getAttribute("data-psave");
+  const reset = t.getAttribute("data-preset");
+  if (!save && !reset) return;
+  const key = save || reset;
+  const area = $("set-body").querySelector('[data-pkey="' + key + '"]');
+  const text = reset ? "" : (area ? area.value : "");
+  try {
+    await api("/prompts", {method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({key, text})});
+    toast(reset ? "已恢复默认" : "已保存，立刻生效");
+    renderSettings(await api("/settings"));
+  } catch (e) { toast("保存失败：" + e.message); }
+});
+$("set-close").onclick = () => $("settings").classList.remove("open");
+$("set-save").onclick = () => saveParams();
+$("set-restart").onclick = async () => {
+  if (!confirm("重启进程？约 3 秒，记录不受影响。只有改过代码才需要它。")) return;
+  try {
+    await api("/restart", {method: "POST"});
+  } catch (e) { toast("重启失败：" + e.message); return; }
+  // 等服务真回来再刷新：固定等 3 秒不够，进程可能还在起。
+  toast("正在重启，回来自动刷新…");
+  const started = Date.now();
+  const wait = async () => {
+    try {
+      await api("/state");
+      location.reload();
+    } catch (e) {
+      if (Date.now() - started > 60000) { toast("还没回来，稍后手动刷新"); return; }
+      setTimeout(wait, 800);
+    }
+  };
+  setTimeout(wait, 1200);
+};
+$("tab-set").onclick = openSettings;
+if (!S.token) $("login").style.display = "flex";
+/* 轮询：平时一秒一次；她在想的时候提到 300ms。一秒就回完的那些句子，
+   一秒一次的轮询连一帧都抓不到，看上去就跟没有流式一样。长请求再补一次。 */
+let pollTimer = 0;
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const delay = S.statusKind === "thinking" ? 300 : 1000;
+  pollTimer = setTimeout(async () => {
+    await poll();
+    schedulePoll();
+  }, delay);
+}
+(async () => { await poll(); schedulePoll(); })();
+</script>
+</body>
+</html>

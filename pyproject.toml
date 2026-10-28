@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rin"
+version = "0.1.0"
+description = "把持续在场落地：她的工具、网关、设置与部署"
+readme = "README.md"
+requires-python = ">=3.13"
+# 核心（palimpsest）没有发布到索引上：开发时 `pip install -e ../palimpsest`，
+# 或者把两个仓的根目录都放进 PYTHONPATH。这里不写死任何路径。
+dependencies = ["PyYAML>=6.0"]
+
+[tool.setuptools.packages.find]
+include = ["rin", "rin.*"]
+
+[tool.setuptools.package-data]
+# 工具描述与页面是代码的一部分：缺一份，模型就少一个工具说明。
+rin = ["prompts/tools/*.txt", "web/*.html"]
