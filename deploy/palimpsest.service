@@ -12,10 +12,10 @@ EnvironmentFile=/etc/palimpsest/loop.env
 # QQ 那边的端点与令牌：`qq` 工具要用（跟适配器读同一份；`-` 表示没有也能起）
 EnvironmentFile=-/etc/palimpsest/qq.env
 Environment=PYTHONUNBUFFERED=1
-# 两个仓并排放，不装进站点包：核心 (/opt/palimpsest) 提供 loop 与 memory_v2，
+# 两个仓并排放，不装进站点包：核心（loop 与 memory_v2）就在同一个目录里 提供 loop 与 memory_v2，
 # 落地层 (/opt/rin) 提供 rin。改代码只要重传并重启，不用重新安装。
-Environment=PYTHONPATH=/opt/palimpsest:/opt/rin
-ExecStart=/opt/palimpsest/.venv/bin/python -m rin --name ${LOOP_NAME} --credentials /etc/palimpsest/credentials.yaml --data data --memory-data data/memory --http ${LOOP_HTTP} --daily-token-cap ${LOOP_DAILY_CAP} --daily-token-warn ${LOOP_DAILY_WARN}
+Environment=PYTHONPATH=/opt/rin
+ExecStart=/opt/rin/.venv/bin/python -m rin --name ${LOOP_NAME} --credentials /etc/palimpsest/credentials.yaml --data data --memory-data data/memory --http ${LOOP_HTTP} --daily-token-cap ${LOOP_DAILY_CAP} --daily-token-warn ${LOOP_DAILY_WARN}
 Restart=always
 RestartSec=5
 # 时间和内存都交给 systemd 兜一层：真跑飞了先杀它，别拖垮整台机器。

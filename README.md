@@ -1,101 +1,159 @@
 # rin
 
-把一个「持续在场」的实例落地到真机器上：工具、网关、设置与部署。
+把「持续在场」的引擎落到一台真机器上：工具、通道、网页、设置与部署。
 
-设计与核心算法在另一个仓 `palimpsest`（`loop` 循环引擎 + `memory_v2` 记忆介质）。
-依赖只有一个方向：
+算法与循环设计在另一个仓 [`palimpsest`](https://github.com/AzureHalcyon/palimpsest)
+（`loop` 循环引擎 + `memory_v2` 记忆介质）。依赖只有一个方向：
 
-    rin  ──导入──▶  palimpsest
-    palimpsest 里没有一句 import rin
+    rin  ——→ palimpsest
+    palimpsest 里没有 import rin
 
-## 两仓怎么分
+## 分工
 
-| 放在 rin（这一个仓） | 放在 palimpsest |
+| 在这一侧 | 在 palimpsest |
 |---|---|
-| 工具实现：`run` / `fetch` / `search` / `write` | 循环引擎：`driver` / `context` / `compress` / `store` |
-| 工具描述文本（`prompts/tools/*.txt`） | 提示词的登记、渲染与校验机制 |
-| 记忆工具面：JSON → 动词 → 一句话 | 记忆算法与六个动词（`memory_v2.api`） |
+| 工具实现：`run` / `fetch` / `search` / `write` / `bilibili` / `qq` | 循环引擎：`driver` / `context` / `compress` / `store` |
+| 工具描述文本（`prompts/tools/*.txt`） | 提示词的登记、渲染与校验 |
+| 记忆工具面：参数 → 动词 → 一句话 | 记忆算法与六个动词（`memory_v2.api`） |
 | 网关、本机入口、设置表 | 引擎自己的工具：`wait` |
 | 人格、提示词覆盖、部署、运维 | —— |
 
-判据：**算法和「循环怎么设计」归 palimpsest，「这个实例怎么跑起来」归这里。**
+判据：**算法归 palimpsest，「这个实例怎么跑起来」归这里。**
 
 ## 目录
 
 ```
 rin/
-  __main__.py          入口：python -m rin
-  app.py               装配线：工具表、提示词登记
-  cli.py               命令行入口（--stdin / --http / --say）
-  gateway.py           网页网关（/feed、/state、设置、看图）
-  web/index.html       页面
-  settings.py          设置表与她那套旋钮
-  memory_bridge.py     记忆工具面：参数 → 动词 → 一句话
-  tool_texts.py        工具描述名单（权威）
-  tools/               shell / webtools / workspace / web_access / landlock / bilibili
-  prompts/tools/       15 份工具描述（wait 的描述留在核心；含 B 站那 5 份）
-checks/                这一侧的自检（工具、网关、设置、措辞）
-deploy/                systemd 单元、部署与回滚、运维记录
-data/                  她的运行数据（不进版本控制）
+  __main__.py        入口：python -m rin
+  app.py             装配线：工具表、提示词登记
+  cli.py             命令行（--stdin / --http / --say）
+  gateway.py         网页网关（/feed /state /inbox /settings /archive）
+  web/index.html     单页界面
+  settings.py        设置表
+  memory_bridge.py   记忆工具面
+  tool_texts.py      工具描述名单
+  tools/             shell / webtools / workspace / web_access / landlock / bilibili / qq
+  prompts/tools/     各工具的描述（`wait` 的描述在核心）
+  qq/                QQ 通道适配器（收事件进收件箱、按 via 定向回发）
+checks/              自检
+deploy/              systemd 单元、部署与回滚
+data/                运行数据（不进版本控制）
 ```
 
 ## 跑起来
 
-开发时两个仓并排，用 `PYTHONPATH` 指回核心（核心不必安装进站点包）：
+开发时两仓并排，用 `PYTHONPATH` 指回核心：
 
     set PYTHONPATH=D:\path\to\palimpsest
     python -m rin --name 名字 --data data --memory-data data/memory --http 127.0.0.1:8080
 
-`python -m rin --help` 是全部参数。凭证与数据目录都可以用参数改，默认见 `--help`。
+`python -m rin --help` 是全部参数；凭证与数据目录都能用参数改。
+循环只由工具调用推进，停是模型自己的动作（`wait`）——`--max-steps` 默认 0，不设上限。
 
-## B 站
+## 工具
 
-一个入口、五个动作（和 QQ 那边一样：动作名 + 参数，记不清就
-`bilibili(action="help")`）：
+### 上网
 
-| 动作 | 干什么 |
+| 工具 | 做什么 |
 |---|---|
-| `search` | 按关键词搜，返回 bvid、标题、UP、播放、时长 |
-| `video` | 一条的完整元数据（简介、分P、cid、链接） |
-| `subtitles` | 取字幕成片文字（**要登录 cookie**，很多轨匿名拿不到） |
-| `playurl` | 单段 mp4 直链 |
-| `transcript` | 没字幕时：下载 → ffmpeg 抽音轨 → 百炼 `qwen3-asr-flash` 转写 |
+| `fetch(url, offset)` | 读一个公开网页的正文，默认 3000 字，`offset` 续读 |
+| `search(query)` | 搜索，返回标题、链接、摘要 |
 
-三样东西要准备：
+抓取分两级：先自己抓（免费，带 SSRF 闸门与正文抽取）；抽不到 300 字或连不上，再走
+DeepSeek 的 `/v1/tools/fetch`。搜索分三级：DeepSeek `/v1/tools/search`（带重排分，
+低分丢弃）→ Tavily（配了键才走）→ Bing RSS（免费兜底）。
 
-- **cookie**：环境变量 `BILI_SESSDATA`，值是登录后的 SESSDATA（裸值，不带 `SESSDATA=`）。
-  有它字幕才拿得到；没有也能搜、能取直链，但字幕接口会回「账号未登录」。
-- **ffmpeg**：`bilibili_transcript` 用它抽 16k 单声道音轨、按 2 分钟切段。
-  装在 PATH 里就行，或者用 `FFMPEG` 指定绝对路径。
-- **转写**：用凭证里那组百炼的键（`ALIYUN_MAAS_API_KEY`），入口会填进 `ASR_KEY`；
-  地址与模型可用 `ASR_URL` / `ASR_MODEL` 覆盖。一次最多转 30 分钟，超了只给前半段。
+闸门在 `web_access.py`：只许 http/https、只走 80/443、域名必须解析到公网地址、
+每一跳重定向重新校验，拒 `localhost` / `.local` / `.internal` / 云元数据。
+同一个链接五分钟内不重复抓。
 
-临时文件落在 `data/tmp/`（不进版本控制）。
+### 工作区
 
-## QQ
+`<data>/workspace` 是唯一可写的地方，也是 `run` 的当前目录。
 
-接进来的通道在 `rin.qq`（收事件 → 收件箱，见 `deploy/README.md` 的「接 QQ」）。
-她**能主动动手**的那一侧只有一个入口：
+| 工具 | 做什么 |
+|---|---|
+| `run(command)` | 在宿主上跑一条命令（`sh -c`），默认关 |
+| `write(path, content)` | 往工作区写文件，只接受相对路径 |
 
+`run` 的边界交给内核：Landlock 只放工作区可写，别处能读能执行；单条命令默认 20 秒、
+单文件 64 MB、输出留头尾共 4000 字；装不上 Landlock 就拒跑（fail-closed）。
+命令里点到凭证（`/etc/palimpsest`、`credentials.yaml`、`*.pem`、`.ssh`）直接不跑。
+
+启动时会在工作区写一份《这台机器.md》，说明能写哪儿、怎么装库、限额多少。
+
+### B 站
+
+一个入口、五个动作（`bilibili(action="help")` 看全部）：
+`search` / `video` / `subtitles` / `playurl` / `transcript`。
+
+- 字幕要登录 cookie：`BILI_SESSDATA`（裸 SESSDATA 值），没有就只回「账号未登录」；
+- `transcript` 没字幕时走 下载 → ffmpeg 抽音轨 → 百炼 `qwen3-asr-flash` 转写，
+  一次最多 30 分钟；
+- 设置页的「B 站」组可以覆盖这三样（cookie / ffmpeg 路径 / 转写模型）。
+
+基于 [`dsh-plugin-bilibili`](https://github.com/AzureHalcyon/dsh-bilibili) fork 并修改：
+搜索、元数据、字幕、直链四步的接口与风控降级沿用上游，`rin/tools/bilibili.py` 重写到
+Python 这一侧，并加了 `transcript`（没字幕时抽音轨转写）。上游本身是 DeepSeek
+Harness 插件，本仓不依赖它运行。
+
+### QQ
+
+通道在 `rin.qq`：把 OneBot 事件收进收件箱，按记录上的 `meta.via` 定向回发。
+模型这一侧只有一个入口 `qq(action, params)`：
+
+- 动作清单写在 `<数据>/workspace/QQ-动作清单.md`（每次启动现写），
+  用 `qq(action="index")` 看组、`qq(action="help", params={"group": …})` 看组内动作；
+- 最常用的三个直接写在工具说明里；
+- 会弄坏连接或等于交出账号的动作（`send_packet`、`set_restart`、`get_cookies` …）直接拒；
+- 端点与令牌：`NAPCAT_BASE`、`NAPCAT_TOKEN`。
+
+用到的外部东西：
+
+| 项目 | 用途 | 说明 |
+|---|---|---|
+| [NapCat](https://github.com/NapNeko/NapCatQQ)（镜像 `mlikiowa/napcat-docker`） | QQ 协议端：登录、收消息、执行动作 | 单独跑在 Docker 里，本仓只连它的 HTTP 端点；掉线与登录见 [`deploy/README.md`](deploy/README.md) |
+| [OneBot 11](https://github.com/botuniverse/onebot-11) | 事件与动作的协议 | 收事件用 HTTP 上报（`POST /feed`），发消息走动作接口 |
+
+接 NapCat、掉线处置见 [`deploy/README.md`](deploy/README.md)。
+
+## 网页
+
+```powershell
+python -m rin --name 名字 --http 127.0.0.1:8080
 ```
-qq(action="get_friend_list", params={})
-qq(action="get_group_list", params={})
-qq(action="send_private_msg", params={"user_id": 10001, "message": "在"})
-```
 
-NapCat（OneBot 11）有九十来个动作：群管理、文件、相册、空间、资料、好友请求…
-一个动作一个工具会把她的上下文撑满，所以只给一个入口 + **一份清单**：
+单文件 `web/index.html`，不起前端工程。令牌在 `<data>/web-token`（600），也可 `--token`。
+**默认只绑 127.0.0.1**。
 
-- 清单在 `<数据>/workspace/QQ-动作清单.md`，**每次起来现写**（`rin.tools.qq_actions`
-  从部署的 NapCat 里抓的动作名，改代码就更新），她拿 `run` / `write` 都看得到；
-- 最常用的三个直接写在工具说明里（上面那三行），不用翻文档；
-- 清单里没有的动作不给调；`send_packet` / `set_restart` / `get_cookies` 这几条
-  直接拒——能把她自己的连接弄down，或者等于交出账号；
-- 会动别人东西的动作（踢人、禁言、删好友、发说说…）照做，但工具结果会明说这一步
-  改了什么，记录里也留得住。
+| 接口 | 作用 |
+|---|---|
+| `POST /say {"text": "…"}` | 写进 `inbox` |
+| `GET /feed?since=<block>:<seq>&step=<n>` | 增量原文 + 增量用量，断线按游标补齐 |
+| `GET /context` | sink、旧段摘要、上一块、当前块 |
+| `GET /state` | 状态、块与上下文占用、今日用量、三处模型名、落地侧提示 |
+| `GET /inbox` | 最近进件与每个会话的策略 |
+| `GET /models?kind=chat\|summary\|embed` | 向端点要模型清单（缓存两分钟） |
+| `GET/PUT /settings` | 旋钮与改动记录；PUT 保存即生效 |
+| `PUT /prompts` | 改一份提示词（空 = 恢复默认） |
+| `POST /archive` | 提前清：把当前这块封口（压缩 → 补录 → 新开一块） |
+| `POST /alerts/clear` | 点掉顶栏那条落地侧提示 |
+| `DELETE /entries?block=&seq=` | 删一条记录（成对删工具结果） |
+| `POST /restart` | 请求循环走到步与步之间退出，交给进程管理器拉起 |
 
-端点与令牌：`NAPCAT_BASE`（默认 `http://127.0.0.1:3000`）、`NAPCAT_TOKEN`，
-和适配器读同一份 `/etc/palimpsest/qq.env`（服务单元里多挂一行 `EnvironmentFile`）。
+网页只读库、只往 `inbox` 写；写库的只有循环那个进程。每条连接各开一个 `LoopStore`，
+库开 WAL，读不挡写。
+
+## 设置与接口
+
+- 参数存 `<data>/settings.json`，只记改过的键；保存即生效（都是每步现读的）。
+- 提示词存 `<data>/prompts.json`，每步现读；「恢复默认」就是删掉那条覆盖。
+- 渠道（对话 / 嵌入的地址与密钥）三层，从下往上盖：代码默认 → 凭证文件
+  `/etc/palimpsest/credentials.yaml` 的 `refs` → 网页设置里的「接口」组。
+  对话与嵌入分开填（常常不是同一家）。改完当场重建客户端，不用重启。
+- 换摘要模型会重建摘要客户端；换嵌入模型要连维度一起对，否则向量缓存认不出来。
+
+只有改代码才需要重启进程（`POST /restart`），循环会走到步与步之间自己退出。
 
 ## 自检
 
@@ -105,203 +163,7 @@ NapCat（OneBot 11）有九十来个动作：群管理、文件、相册、空�
 
 ## 部署
 
-见 [`deploy/README.md`](deploy/README.md)：目录布局、装包、数据迁移、切换与回滚。
-
----
-
-## 网关、设置与工具（详细）
-
-下面这几节原本在 `palimpsest` 的 `loop/README.md` 里，搬过来是因为它们描述的是**这一侧**的行为：网关、设置表、记忆工具面、上网与命令。
-
-## 网页
-
-```powershell
-python -m rin --name 名字 --http 127.0.0.1:8080
-```
-
-开了 `--http` 就等于有输入通道（和 `--stdin` 一样，让 `wait` 真的等）。首页是单文件
-`web/index.html`，不起前端工程、不加依赖。令牌自动生成在 `<data>/web-token`
-（600），也可以 `--token` 指定。**默认只绑 127.0.0.1**：对外要从隧道走，
-不是把端口开到公网。
-
-| 接口 | 作用 |
-|---|---|
-| `POST /say {"text": "…"}` | 写进 `inbox`，和 stdin 同一条路 |
-| `GET /feed?since=<block>:<seq>&step=<n>` | 增量原文 + 增量用量；断线重连带游标补齐 |
-| `GET /context` | sink、四段旧摘要、上一块、当前块的原文与 token |
-| `GET /state` | 在想还是在等、块与上下文占用、今天花了多少、三处模型名 |
-| `GET /inbox?limit=60` | 「消息」页的数据：最近的进件（含状态）与每个会话的策略 |
-| `GET /models?kind=chat\|summary\|embed` | 问端点要一份模型清单（缓存 2 分钟）；界面上的「列表」和顶栏模型胶囊用它 |
-| `GET/PUT /settings` | 旋钮清单、当前值、改动记录；PUT 保存并当场生效 |
-| `PUT /prompts` | 改一份提示词（空 = 恢复默认） |
-| `DELETE /entries?block=&seq=` | 删一条记录（成对删工具结果）；只举 `request_reload` 旗子，不重启 |
-| `POST /restart` | 请求循环走到步与步之间退出，交回给外面的进程管理器拉起 |
-
-★ 网页这一层**只读库、只往 `inbox` 写**，不碰 `blocks` / `entries` / `bands` ——
-单写者仍然是循环那个进程，网页崩了顶多看不见，不会把记录弄坏。每条连接各开一个
-`LoopStore`（SQLite 连接不能跨线程共享），库开了 WAL，读不挡写。
-
-界面上：左边是步的时间线（每步的输入/命中/输出、说的正文、工具调用与结果），
-右边是上下文监视（当前块占多少、上一块、四段旧摘要、sink），断线重连按游标补齐，
-不重不漏。
-
-顶栏「消息」那一页是外部来信的仪表盘：每个会话一行（来源、名字、还没读几条、策略下拉），
-下面是最近的来信（时间、谁在哪个会话说的、正文、状态：叫过了还没取 / 攒着 / 已并进记录）。
-来源照实写：网页输入标「网页」、命令行标「命令行」、QQ 标「QQ · 私聊「备注」」——
-私聊的名字优先用好友备注（问 `get_friend_list`，缓存十分钟），没有备注才用昵称。
-她自己只看得见没读的正文，这一页把读过的、按 mute 藏着的也列出来，人能核对。
-她说的话如果是回给外部某个会话的，气泡下面会多一行「→ 已发到 QQ 私聊「谁」」——
-那行来自记录上的 `meta.via`，适配器照它定向回发。
-
-几处是照着 App 的做法搬过来的，不是另起一套：
-
-- **输入框**：左边一行号槽（按**逻辑行**编，折行的续行留空），**回车只换行**，
-  发送只有右边那个 36 圆钮；行高 22、最多 5 行，再多就在框里滚（行号跟着滚），
-  高度变化 120ms 过渡。行数靠一面隐藏的镜像墙量（`#mirror`），textarea 不会告诉你有几行。
-- **主题**：顶栏右上角 ☀/☾，或设置页最上面「外观」三选一（跟随系统 / 浅色 / 深色）。
-  浅色那套值也取自 DSH：气泡 `deepseek-50`、边框黑 10%、label 用 bluish 阶梯。
-- **换模型**：顶栏那个模型胶囊点开就是端点给的清单，挑了立刻生效（`PUT /settings`）。
-  设置里「主模型 / 摘要模型 / 嵌入模型」各有「列表」按钮，拉不到就直接手写。
-- **删记录**：确认框里写清楚**撤回不了什么**——它当时写进记忆的笔记还在、压进旧段的
-  摘要改不了、用量和步数不会退回去；删的只是「下一步起它不再看到这一行」。
-
-## 工作区
-
-`<data>/workspace` 是它自己的地方：跑命令的 cwd 就在这儿，写东西也只写这儿。
-
-| 工具 | 能做什么 | 闸门 |
-|---|---|---|
-| `run` | 跑白名单里的**只读**命令 | 第一段程序名 + 不经 shell + 拒读凭证 |
-| `write` | 往工作区写文件（覆盖 / 追加） | 只写 `<data>/workspace`：绝对路径、`..`、解析后跑出工作区的都拒；单次上限 `write_max_chars`（默认 10 万字） |
-
-为什么不把写命令并进 `run`：`<data>/` 是服务用户可写的，白名单里放 `tee` / `mkdir`
-等于把改 `loop.sqlite3`、`graph.json` 的权限也交出去。`write` 只管工作区这一块，
-其余留给 `run` 的只读面。
-
-那里的 `README.md` 是给人（和它）看的约定：草稿、收件箱、脚本各放哪。它不写这个文件，
-改了也不会被覆盖——只是部署时放了一份。
-
-## 记忆工具面
-
-五个动作分工清楚，说明文字在 `prompts/tools/<工具>.txt`：
-
-| 工具 | 做什么 | 返回长什么样 |
-|---|---|---|
-| `remember` | 写一件事；**一件事一条笔记**，同名或给 `event` 再记就是改这条 | `已记（新建）：…（id，long，128 字）` / `已更新：…——换成了新的这 128 字，原来那句是「…」`；**一字不差时返回"没再写"** |
-| `link` | 把两件连起来，不动内容（先建再连就是两次调用） | `连上了：A — B（关联）`；连着的不再加；同一件会拒 |
-| `recall` | 按关键词找，返回 id / 名字 / 时间 | 命中列表 + "看具体用 recollect" |
-| `recollect` | 把某一件写成一段回忆（编写模型现写） | 第一人称回忆 |
-| `forget` | 删一件（连它的连接） | `忘了：名字（id）` |
-| `rename` | 改名字，不动笔记与连接 | `改名了：旧 → 新`；重名会被拒 |
-
-**为什么关系和内容分成两个工具**：合成一个的时候，"只想把两条连起来"没有入口——它被迫
-带着 note 一起调，被"需要 note"挡下来，只好新建第三件来连（服务器上真这么演了一遍）。
-现在 `link(a, b)` 单独做一件事，不动内容。
-
-**note 只留十步**：`remember` 刚写进去的那几步，记录里原样留着 note（她要能回头看见自己
-写了什么，不然会怀疑"note 没传、内容是系统补的"）；过了 `NOTE_KEEP_STEPS`（10 步）就换成
-一句占位，要内容用 `recollect`——note 本来就不该在记录里躺到底。
-
-**为什么要"没再写"这句话**：以前同名更新也返回"已记"，模型看到后以为没记好，于是一步一个
-`remember` 反复写同一件事（服务器上连了 7 步）。现在同内容直接告诉它"没再写"，返回里还带
-上这次写进去的那一句话，看着就知道记的是不是自己想的那条；`_TURN_CALL_CAP`（同一轮同一
-工具连调 3 次）兜底——第 4 次不执行，只问一句「还要接着用就再调一次，这次照跑」，它再调
-就真执行、计数重新起算。**不挡死**：人叫她重试或她真要多跑几条的时候，挡住了就成了死结
-（线上出过：人说「你要不要重新试试」，她还是被次数挡回去）。对方再说话计数也清零。
-
-**为什么不追加**：一件事件以前可以攒好几条笔记（每次 `remember` 加一条），结果同一件事挂
-着三条几乎一样的话，她自己都分不清哪条算数，`recollect` 也拿一堆重复材料去写回忆。
-现在一件事一条笔记：再记就是改这条，返回会说原来那句是什么。要留"我当时怎么想的"就另开
-一件（名字不同），别往同一件里追加。老数据里多于一条的，下一次 write 会收回一条。
-
-## 接口
-
-渠道（对话 / 嵌入的地址与密钥）有三层，从下往上盖：
-
-1. 代码默认（`DEFAULT_CHAT_URL`）；
-2. 凭证文件 `/etc/palimpsest/credentials.yaml` 的 `refs`（`LOOP_CHAT_KEY` / `LOOP_CHAT_URL`，
-   或退回 `DEEPSEEK_*`；嵌入是 `ALIYUN_MAAS_*`）；
-3. **网页设置里的「接口」组**（`chat_url` / `chat_key` / `embed_url` / `embed_key`，存在
-   `<data>/settings.json`，权限 600。里面是明文密钥，别把这个文件给别人看）。
-
-两层是互补的：凭证文件里没写的可以在网页上填；网页上留空的就用凭证文件里的。
-对话与嵌入**分开**填地址——它们常常不是同一家。
-改完立刻生效：`_rebuild_channel` 重建对话客户端、摘要客户端、嵌入器，并清掉模型清单缓存。
-
-## 设置
-
-网页的「设置」页可以直接改旋钮和提示词，不用登服务器。
-
-- **参数**存 `<data>/settings.json`，**只记改过的键**（没改的跟着代码默认走，升级时默认值变了也跟得上）；
-  保存就生效，因为这些都是每步现读的。
-- **提示词**写进 `<data>/prompts.json`，每步现读，保存就生效；「恢复默认」就是删掉那条覆盖。
-- **模型**：主模型、摘要模型、嵌入模型都能改，也都能点「列表」从端点清单里挑
-  （`/models`；嵌入只筛出名字带 `embedding` 的那些）。
-  换**摘要模型**会重建摘要客户端，换**嵌入模型/维度**会重建嵌入器——都是造好就带着
-  模型名的东西，光改配置不会生效。嵌入模型和维度是一对，换一个要连另一个一起对，
-  否则向量缓存按 (model, dim) 认不出来，召回会静默变差。
-- **主题**不进 `settings.json`：那是浏览器自己的偏好，存在 localStorage，换设备各管各。
-- **删记录**也不用重启：网页只举一个 `request_reload` 旗子，循环在下一个安全点
-  （步首，或等待里每秒那次维护）按库重读两块原文。删的只是时间线那一行 ——
-  它写进记忆的笔记、已经压进旧段的摘要都不会跟着撤回（旧段整体只读）；输入框下面
-  那行用量会退，设置里的「用量总账」不退。
-
-只有改过**代码**才需要「重启进程」：`control.request_stop()` 让循环走到步与步之间
-自己退出，再由外面的进程管理器拉起来——不会留下说了一半的正文或没有结果的调用。
-
-接口：`GET/PUT /settings`、`PUT /prompts`、`POST /restart`、`DELETE /entries`、`GET /models`。
-
-## 上网
-
-两个工具，都零配置：
-
-| 工具 | 做什么 |
-|---|---|
-| `fetch(url, offset)` | 读一个公开网页的正文；默认给 3000 字，`offset` 续读 |
-| `search(query)` | 搜一下，返回标题、链接、摘要 |
-
-**抓取分两级**：先自己抓（免费、SSRF 闸门、正文抽取）；抽出来不到 300 字，
-或者根本连不上（超时、反爬），再走 DeepSeek 的 `/v1/tools/fetch`——它能把 JS
-页面渲染成 Markdown，按成功请求计费，所以只在必要时花。
-
-**搜索分三级**：
-
-1. DeepSeek `/v1/tools/search`（同一个 `DEEPSEEK_API_KEY`）：带 `rerank_score`，
-   **低于 1.0 的直接丢掉**（全是低分才退回全部），摘要用它给的 `summary`；
-2. Tavily（配了 `TAVILY_API_KEY` 才走）；
-3. Bing 的 RSS 端点（免费兜底）。
-
-免费那几条实测记录：百度跳图形验证码、搜狗给 IP 限制页、360 能给结果但链接是
-会话绑定的（打开跳回它自己的导航页）；Bing 的 RSS 偶尔**整段跑题**——问
-「阿里云 学生机 价格」会返回一堆 OPPO 手机的问题。所以免费源只当兜底，
-平时走 DeepSeek。
-
-闸门（`web_access.py`）：只允许 http/https、只走 80/443、域名必须解析到**公网**
-地址、每一跳重定向重新校验、拒绝 `localhost` / `.local` / `.internal` / 云元数据。
-抓回来的网页是**数据不是指令**，工具说明里写了这一句。
-
-正文抽取：装了 `trafilatura` 就用它，没装退回标准库那把（`HTMLParser` 扔脚本样式、
-按块级标签断行）。所以 `requirements.txt` 不必加东西。
-
-同一个链接五分钟内不重复抓（进程内缓存）。
-
-## 命令
-
-`run(command)`：在跑循环的那台机器上执行一条命令，**默认关**（设置里的「命令」组）。
-现在**不维护程序白名单**——边界交给内核：
-
-- **Landlock 沙箱**（`landlock.py`）：整台机器可读、可执行，**只有 `<data>/workspace`
-  能写**；写的动作（建/删/改/截断/改名/符号链接）在工作区外一律 `Permission denied`。
-- **走 shell**：`sh -c`（Windows 上是 `cmd /c`），所以管道、重定向都能用。
-- **单文件上限**：`run_file_mb`（默认 64 MB，`RLIMIT_FSIZE`），防止往工作区里灌满盘。
-- **超时**：默认 20 秒，超了连进程组一起杀；**输出**默认留 4000 字（头 60% + 尾 40%）。
-- **fail-closed**：装不上 Landlock 就拒跑，绝不"没沙箱也照跑"；要裸跑得在设置里
-  明确关掉「关进沙箱」（等于把整台机器交给它）。
-- **唯一剩下的规则**：命令里点到凭证/密钥（`/etc/palimpsest`、`credentials.yaml`、
-  `web-token`、`*.pem`、`.ssh`）就不跑——那不是沙箱能管的事，管的是"别把密钥念进记录"。
-
-网络不在 Landlock 的文件词表里，所以它照常能联网（要断网得用 namespace，这台机器上
-`unshare -r` 被禁）。工具名与说明在 `prompts/tools/run.txt`。
+见 [`deploy/README.md`](deploy/README.md)：机器布局、装包、接 QQ、掉线处置、更新与回滚。
 
 ## 协议
 

@@ -90,7 +90,8 @@ def doc_text(config) -> str:
     file_mb = int(getattr(config, "run_file_mb", 64) or 64)
     limit = int(getattr(config, "run_output_chars", 4000) or 4000)
     pillow = _version_of("PIL")
-    pillow_line = ("- 已经装好的库：Pillow %s（`import PIL`）。" % pillow if pillow
+    pillow_line = ("- 已经装好的库：Pillow %s，装在 **%s** 里——系统那个 `python3` 没有它；"
+                   "要用就先换成这条路径的解释器。" % (pillow, sys.executable) if pillow
                    else "- 这个解释器里还没有 Pillow。")
     try:
         existing = sorted(name for name in os.listdir(workspace)
