@@ -19,7 +19,7 @@ import time
 
 # 组名按这个顺序显示；账目的分组借用 App 那边的说法。
 GROUPS = ("模型", "接口", "上下文", "记忆", "命令", "成本", "节奏",
-          "B 站", "QQ", "提示词", "改动记录")
+          "B 站", "岛", "QQ", "提示词", "改动记录")
 
 # 网页表单就按这张表画。加一个旋钮 = 在这里加一行 + `LoopConfig` 里加字段。
 # 空着是有意义的（空 = 跟主模型走、空 = 用凭证文件）就写 `"optional": True`：
@@ -75,6 +75,12 @@ FIELDS = (
     {"key": "tool_fold_keep", "group": "上下文", "label": "工具结果保留条数",
      "type": "int", "min": 0, "max": 20,
      "help": "每块留最近几条超长工具结果原文，更早的折成一行；0=不折"},
+    {"key": "image_keep_steps", "group": "上下文", "label": "图片保质期（步）",
+     "type": "int", "min": 0, "max": 100,
+     "help": "最近这么多步里的带图片消息才真把图片发出去；更早的只留一行「（一张 … 的图片：收件/…）」。0 = 一步之后就不带图片"},
+    {"key": "note_keep_steps", "group": "上下文", "label": "记下记忆的提醒留几步",
+     "type": "int", "min": 0, "max": 100,
+     "help": "remember 那声提醒在上下文里留几步，过了换成一句占位（内容在记忆里）"},
 
     {"key": "recent_steps", "group": "记忆", "label": "最近几步不入召回", "type": "int",
      "min": 0, "max": 1000, "help": "0=关；开着可以让刚发生的事只出现在原文里"},
@@ -138,6 +144,22 @@ FIELDS = (
     {"key": "bili_asr_model", "group": "B 站", "label": "转写模型", "type": "text",
      "optional": True, "help": "没字幕时用哪个模型转；空 = qwen-audio-3.1-asr-flash"},
 
+    {"key": "xdao_base", "group": "岛", "label": "站点地址", "type": "text",
+     "optional": True, "help": "图看哪个岛；空 = https://www.nmbxd1.com"},
+    {"key": "xdao_cookie", "group": "岛", "label": "饼干（userhash）", "type": "text",
+     "secret": True, "help": "看串不需要；发串回串要靠它。站点 Cookie 里 userhash 那一段"},
+    {"key": "xdao_search_base", "group": "岛", "label": "搜索地址", "type": "text",
+     "optional": True, "help": "社区那台全文检索；空 = https://xds.wol.moe"},
+    {"key": "xdao_search_ua", "group": "岛", "label": "搜索 UA", "type": "text",
+     "optional": True,
+     "help": "那边只认公开测试 UA 或浏览器 UA；空 = XdnmbSearch/1.0 (PublicTest 261029)"},
+    {"key": "xdao_name", "group": "岛", "label": "她在岛上的落款", "type": "text",
+     "optional": True,
+     "help": "饼干显示的那个短名字；轮询靠它挡掉「自己回自己」。看串读出来能对一下"},
+    {"key": "xdao_feed_interval", "group": "岛", "label": "多久看一轮（秒）", "type": "int",
+     "min": 30, "max": 3600, "default": 300,
+     "help": "她自己那几个串的新回复，多少秒看一次；只攒着、不叫醒她"},
+
     {"key": "qq_base", "group": "QQ", "label": "NapCat 地址", "type": "text",
      "optional": True, "help": "qq 工具调 OneBot 的地址；空 = http://127.0.0.1:3000"},
     {"key": "qq_token", "group": "QQ", "label": "NapCat 令牌", "type": "text",
@@ -167,7 +189,9 @@ def defaults() -> dict:
     fresh = LoopConfig()
     out = {}
     for field in FIELDS:
-        value = getattr(fresh, field["key"], None)
+        # 不在 LoopConfig 上的键（`CHANNEL_KEYS` 那些）用表里写的 default——
+        # 不然整页保存会把空串塞给一个 int 字段，430 直接拒整页。
+        value = getattr(fresh, field["key"], field.get("default"))
         out[field["key"]] = list(value or []) if field["type"] == "ints" else value
     return out
 
@@ -317,6 +341,9 @@ def history(data_dir: str, limit: int = 40) -> list:
 # 存在 settings.json、不进 LoopConfig 的键：接口凭据 + 两个工具的凭据。
 CHANNEL_KEYS = ("chat_url", "chat_key", "embed_url", "embed_key",
                 "bili_sessdata", "bili_ffmpeg", "bili_asr_model",
+                "xdao_base", "xdao_cookie",
+                "xdao_search_base", "xdao_search_ua",
+                "xdao_name", "xdao_feed_interval",
                 "qq_base", "qq_token")
 
 
@@ -399,7 +426,10 @@ def effective(config) -> dict:
     for field in FIELDS:
         key = field["key"]
         if key in CHANNEL_KEYS:
-            out[key] = "" if field.get("secret") else str(stored.get(key) or "")
+            if field.get("secret"):
+                out[key] = ""
+            else:
+                out[key] = str(stored.get(key) or field.get("default") or "")
             continue
         value = getattr(config, key, None)
         out[key] = list(value or []) if field["type"] == "ints" else value

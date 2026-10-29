@@ -896,13 +896,17 @@ def check_settings() -> None:
         # 提示词自己一项，顺序照真实注入顺序：声音 → sink → 她写的 → 工具 → 按需
         keys = [item["key"] for item in payload["prompts"]]
         check("persona-written" in keys, "她自己写的那段也要列在提示词里")
-        check(keys.index("voice") < keys.index("sink") < keys.index("persona-written"),
-              "顺序要照注入顺序：%r" % keys[:4])
+        check(keys.index("voice") < keys.index("persona-written") < keys.index("sink"),
+              "顺序要照注入顺序（开场 → 她自己写的 → 机制与边界）：%r" % keys[:4])
         sections = [item["section"] for item in payload["prompts"]]
-        check(sections[:3] == ["常驻 System"] * 3,
-              "前三份都是常驻 system：%r" % sections[:4])
-        check("工具描述" in sections and "按需调用" in sections,
-              "提示词要按 system / 工具描述 / 按需调用 分段：%r" % sections)
+        check(sections[:3] == ["常驻"] * 3,
+              "前三份都是常驻：%r" % sections[:4])
+        order = ["常驻", "工具", "归档", "其他"]
+        ranks = [order.index(item) if item in order else -1 for item in sections]
+        check(all(rank >= 0 for rank in ranks) and ranks == sorted(ranks),
+              "提示词要按 常驻 / 工具 / 归档 / 其他 分段（且不回头）：%r" % sections)
+        check(sections.count("常驻") == 3 and "工具" in sections and "归档" in sections,
+              "四段都在：%r" % sections)
         check(payload["groups"][-2:] == ["提示词", "改动记录"]
               and "QQ" in payload["groups"] and "B 站" in payload["groups"],
               "提示词、改动记录、QQ、B 站各是一项：%r" % (payload["groups"],))
@@ -1604,6 +1608,493 @@ def check_injection_guard() -> None:
               "子进程的环境里不该带令牌：%r" % sorted(env)[:6])
         check("PATH" in env, "别的一概留着（PATH 之类的不能少）")
     finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def check_image() -> None:
+    """图：落地、写进 meta、正文只留一行事实；核心把清单拼成 image_url 段。
+
+    这一侧**不再调视觉模型**——图跟着消息进对话，她自己的模型就看得见。
+    """
+    import base64
+
+    from PIL import Image
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from loop.driver import _inbox_entry
+
+    workdir = tempdir("img-")
+    httpd = None
+    try:
+        cfg = _loop_config(name="自检", data_dir=workdir)
+        buffer = io.BytesIO()
+        Image.new("RGB", (2000, 1000), (240, 240, 235)).save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        block, landed = web._image_block(workdir, [{"b64": encoded}])
+        check("（一张 2000×1000 的图：收件/" in block,
+              "正文里要留一行事实：%r" % block)
+        check(len(landed) == 1 and landed[0]["path"].startswith("workspace/收件/"),
+              "清单里的路径要相对数据目录：%r" % (landed,))
+        check(landed[0]["w"] == 2000 and landed[0]["h"] == 1000,
+              "尺寸要记下来：%r" % (landed[0],))
+        check(os.path.isfile(os.path.join(workdir, landed[0]["path"])),
+              "说要落地就要真在盘上")
+        check(web._image_block(workdir, []) == ("", []), "没有图就什么都不加")
+        check("没取到" in web._image_block(
+            workdir, [{"url": "http://127.0.0.1:1/x.png"}])[0],
+            "取不到就说取不到")
+
+        # 核心那侧：带图的进件变成段数组，纯文字的仍是字符串
+        entry = _inbox_entry({"text": "看这个", "meta": {"images": landed}})
+        check(isinstance(entry["content"], list), "带图的进件要变成段数组")
+        check(entry["content"][0] == {"type": "text", "text": "看这个"},
+              "第一段是文字：%r" % (entry["content"][0],))
+        check(entry["content"][1]["type"] == "image"
+              and entry["content"][1]["path"] == landed[0]["path"],
+              "第二段是图：%r" % (entry["content"][1],))
+        plain = _inbox_entry({"text": "就一句"})
+        check(isinstance(plain["content"], str), "没有图还是字符串")
+
+        # 真走一遍 /inbox：进件正文有一行事实，meta 里挂图清单
+        db_path = os.path.join(workdir, "loop.sqlite3")
+        store = LoopStore(db_path)
+        httpd = web.serve(cfg, db_path, "tok", "127.0.0.1", 0)
+        body = json.dumps({"source": "QQ", "chat_type": "private", "chat_id": "1",
+                           "sender_name": "甲", "text": "",
+                           "images": [{"b64": encoded}],
+                           "ext_id": "img-1"}).encode("utf-8")
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d/inbox" % httpd.server_address[1],
+            data=body, method="POST")
+        request.add_header("Content-Type", "application/json")
+        request.add_header("Authorization", "Bearer tok")
+        with urllib.request.urlopen(request, timeout=20) as response:
+            check(response.status == 200, "只发一张图也算一条进件")
+        items = store.inbox_recent(5)
+        text = str((items[0] or {}).get("text") or "")
+        meta = (items[0] or {}).get("meta") or {}
+        check("（一张 2000×1000 的图：" in text, "进件正文里要有事实行：%r" % text)
+        check(meta.get("images") and meta["images"][0]["path"].startswith("workspace/"),
+              "图清单要挂进 meta：%r" % (meta,))
+        check(store.inbox_has_ext("QQ:img-1"), "只带图的进件也要记账")
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/" % httpd.server_address[1], timeout=5) as response:
+            page = response.read().decode("utf-8")
+        check('id="pick"' in page and 'id="attached"' in page, "网页上要有发图的入口")
+        store.close()
+    finally:
+        if httpd is not None:
+            httpd.shutdown()
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def check_xdao() -> None:
+    """X岛 只读那一层：HTML 摊平、板块/串/回复怎么拼、出错说什么。
+
+    接口一律走假数据（`xdao.api` 是可以换掉的入口），所以不联网；真实响应形状是按
+    2026-10-29 实测的字段抄的（`user_hash` 其实是显示的名字、`img`+`ext` 拼图床地址）。
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from rin.tools import xdao
+
+    workdir = tempdir("xdao-")
+    real_api = xdao.api
+    seen = []
+    try:
+        cfg = _loop_config(name="自检", data_dir=workdir)
+
+        check(xdao.plain("<b>你好</b><br>第二行 &gt;&gt;No.1&amp;") ==
+              "你好\n第二行 >>No.1&", "HTML 要摊平、实体要解开：%r"
+              % xdao.plain("<b>你好</b><br>第二行 &gt;&gt;No.1&amp;"))
+        check(xdao.plain("  a \u3000 b \n\n\n\nc ") == "a b\n\nc", "空白要收一收")
+        check(xdao.image_of({"img": "2022-12-04/638c87770b738", "ext": ".jpg"}) ==
+              "https://image.nmb.best/image/2022-12-04/638c87770b738.jpg", "图床地址")
+        check(xdao.image_of({}) == "", "没有图就是空串")
+
+        def fake(path, config=None):
+            seen.append(path)
+            if path.startswith("/Api/getForumList"):
+                return [{"name": "综合", "forums": [
+                    {"id": "-1", "name": "时间线"},
+                    {"id": "4", "name": "综合版1"},
+                    {"id": "20", "name": "欢乐恶搞"}]},
+                        {"name": "创作", "forums": [{"id": "5", "name": "创作"}]}]
+            if path.startswith("/Api/showf"):
+                return [{"id": 52752005, "ReplyCount": 7,
+                         "now": "2022-10-16(日)23:14:27", "title": "无标题",
+                         "content": "欢迎来到X岛<br>网页端地址：www.nmbxd.com"},
+                        {"id": 52752006, "ReplyCount": 0, "now": "2026-10-29 22:00:00",
+                         "title": "一个标题", "content": "正文"},
+                        # 回读用的：发出去那条要在板上找得到
+                        {"id": 69700001, "ReplyCount": 0, "now": "2026-10-29 23:00:00",
+                         "title": "无标题", "content": "第一条"},
+                        {"id": 69700002, "ReplyCount": 0, "now": "2026-10-29 23:01:00",
+                         "title": "无标题", "content": "中和的一条"}]
+            if path.startswith("/Api/thread"):
+                replies = [{"id": 9999999, "user_hash": "Tips",
+                            "now": "2099-01-01 00:00:01", "name": "无名氏",
+                            "content": "回一句<br>再一行", "img": "", "ext": ""}]
+                return {"id": 50000002, "fid": 4, "ReplyCount": 41,
+                        "title": "无标题", "now": "2026-10-01 10:00:00",
+                        "user_hash": "Admin", "name": "无名氏",
+                        "content": "置顶串正文", "img": "2026-02-12/abc", "ext": ".png",
+                        "Replies": replies}
+            raise AssertionError("没料到的地址：%s" % path)
+
+        xdao.api = fake
+        schemas = xdao.tools(cfg)
+        check(len(schemas) == 1 and schemas[0]["function"]["name"] == "xdao",
+              "xdao 该有且只有一个 schema")
+        check(schemas[0]["function"]["parameters"]["properties"]["action"]["enum"] ==
+              ["forums", "list", "read", "post", "reply", "search", "where"],
+              "七个动作")
+
+        forums = xdao.call("xdao", json.dumps({"action": "forums"}), cfg)
+        check("综合：4 综合版1 · 20 欢乐恶搞" in forums, "板块要分组列 id：%r" % forums)
+        check("时间线" not in forums, "-1 是时间线，不是能发串的板块")
+
+        listing = xdao.call("xdao", json.dumps(
+            {"action": "list", "params": {"fid": 4}}), cfg)
+        check(seen[-1] == "/Api/showf?id=4&page=1", "翻页参数要带上：%r" % seen[-1])
+        check("No.52752005 欢迎来到X岛" in listing and "（回 7，" in listing,
+              "没有标题就拿正文开头当标题：%r" % listing[:120])
+        check("No.52752006 一个标题（回 0，" in listing, "有标题就用标题")
+        check("xdao(action=\"read\"" in listing, "列表末尾要告诉她怎么往下看")
+        check("<br>" not in listing, "别把 HTML 漏进记录")
+
+        thread = xdao.call("xdao", json.dumps(
+            {"action": "read", "params": {"id": 50000002}}), cfg)
+        check(thread.startswith("No.50000002「无标题」 · Admin"), "串头要有号和名字")
+        check("置顶串正文" in thread, "串主要正文")
+        check("图：https://image.nmb.best/image/2026-02-12/abc.png" in thread,
+              "图要给能直接看的地址：%r" % thread[:200])
+        check(">>No.9999999 · Tips · 2099-01-01 00:00:01" in thread, "回复要有号和人")
+        check("回一句\n再一行" in thread, "回复里的换行要保下来")
+        check("page=2" in thread, "回复没读完要提示翻页")
+
+        # 页号夹在 1..50
+        xdao.call("xdao", json.dumps({"action": "read", "params": {"id": 1, "page": 0}}), cfg)
+        check(seen[-1].endswith("page=1"), "第 0 页按第 1 页算：%r" % seen[-1])
+        xdao.call("xdao", json.dumps(
+            {"action": "read", "params": {"id": 1, "page": 999}}), cfg)
+        check(seen[-1].endswith("page=50"), "页号有上限：%r" % seen[-1])
+
+        # 太长要截断，别把一次回复塞满整块记录
+        xdao.MAX_OUT, real_max = 100, xdao.MAX_OUT
+        try:
+            long = xdao.call("xdao", json.dumps(
+                {"action": "read", "params": {"id": 50000002}}), cfg)
+            check("…（后面还有" in long and len(long) < 400,
+                  "超长要截断并说清楚：%d 字" % len(long))
+        finally:
+            xdao.MAX_OUT = real_max
+
+        # 出错与缺参数：都给一句能读的话，不抛
+        def broken(path, config=None):
+            raise xdao.XdaoError("岛上回了 502（%s）" % path)
+
+        xdao.api = broken
+        check("岛那边没成" in xdao.call("xdao", json.dumps({"action": "forums"}), cfg),
+              "接口挂了要说一句实话")
+        xdao.api = fake
+        check("先 forums" in xdao.call("xdao", json.dumps({"action": "list"}), cfg),
+              "没给 fid 就提示先去拿")
+        check("给 id" in xdao.call("xdao", json.dumps({"action": "read"}), cfg),
+              "没给 id 就提示")
+        check("没有这个动作" in xdao.call("xdao", json.dumps({"action": "like"}), cfg),
+              "不认识的动作要明说")
+        check("不是 JSON" in xdao.call("xdao", "{", cfg), "坏参数也要回一句话")
+
+        # ── 写：发串 / 回串 ─────────────────────────────────────────────────
+        # 岛那边用一个小服务器假扮：它记录收到的 multipart 与 Cookie，
+        # 正文里带「坏」就回错误页，其余回「发表成功」。
+        posted = []
+        reads = []
+
+        class _Island(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                return
+
+            def do_GET(self):
+                reads.append({"path": self.path,
+                              "cookie": self.headers.get("Cookie") or ""})
+                if "id=27" in self.path:
+                    payload = {"error": "该版面需要饼干", "success": False}
+                else:
+                    payload = [{"id": 1, "title": "t", "content": "x",
+                                "ReplyCount": 0, "now": ""}]
+                raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length)
+                posted.append({"path": self.path.split("?")[0],
+                               "cookie": self.headers.get("Cookie") or "",
+                               "type": self.headers.get("Content-Type") or "",
+                               "body": body.decode("utf-8", "replace")})
+                if "坏" in body.decode("utf-8", "replace"):
+                    page = ('<div class="system-message"><h1>:(</h1>'
+                            '<p class="error">内容和图片不能同时为空</p></div>')
+                elif "中和" in body.decode("utf-8", "replace"):
+                    # 既不报错也不说成功：模拟岛那种只回一张空跳转页的情况
+                    page = '<div class="system-message"><p>好的</p></div>'
+                else:
+                    page = ('<div class="system-message"><h1>:)</h1>'
+                            '<p class="success">发表成功</p>'
+                            '<a href="/t/69703400">看看</a></div>')
+                raw = page.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        island = ThreadingHTTPServer(("127.0.0.1", 0), _Island)
+        threading.Thread(target=island.serve_forever, daemon=True).start()
+        os.environ["XDAO_BASE"] = "http://127.0.0.1:%d" % island.server_address[1]
+        for key in ("XDAO_COOKIE",):
+            os.environ.pop(key, None)
+        try:
+            check("饼干" in xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"fid": 57, "content": "在"}}), cfg),
+                "没有饼干就不该往外发")
+            os.environ["XDAO_COOKIE"] = "test-cookie"
+            check("板块" in xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"content": "在"}}), cfg), "发串要 fid")
+            check("哪个串" in xdao.call("xdao", json.dumps(
+                {"action": "reply", "params": {"content": "在"}}), cfg), "回串要 id")
+            check("正文" in xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"fid": 57, "content": "  "}}), cfg),
+                "空正文不往外发")
+            check("太长" in xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"fid": 57, "content": "字" * 1201}}), cfg),
+                "一条装不下的先拦住")
+
+            # 清一下闸：这个临时目录是新的，桶是空的
+            said = xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"fid": 57, "title": "试试",
+                                              "content": "第一条"}}), cfg)
+            check("发出去了" in said and "69703400" in said,
+                  "发出去要把串号带回来：%r" % said)
+            sent = [record for record in posted
+                    if record["path"] == "/Home/Forum/doPostThread.html"]
+            check(bool(sent), "发串走的是网页表单那个地址：%r"
+                  % [record["path"] for record in posted])
+            check(sent[-1]["cookie"] == "userhash=test-cookie",
+                  "要带 cookie：%r" % sent[-1]["cookie"])
+            check(sent[-1]["type"].startswith("multipart/form-data"),
+                  "正文要是 multipart：%r" % sent[-1]["type"])
+            for piece in ('name="fid"', 'name="content"', 'name="title"',
+                          'name="name"', "第一条"):
+                check(piece in sent[-1]["body"], "multipart 里缺 %r" % piece)
+            # 发完自动订阅：站上的"订阅"列表里有它，轮询那条路才认得
+            followed = [record for record in posted if record["path"] == "/Api/addFeed"]
+            check(bool(followed) and "tid=69703400" in followed[-1]["body"],
+                  "发完要把这条串订阅上：%r" % (followed[-1]["body"][:80] if followed else None))
+            check("uuid=" in followed[-1]["body"], "订阅要带订阅 ID")
+
+            said = xdao.call("xdao", json.dumps(
+                {"action": "reply", "params": {"id": 50000002, "content": "回一句"}}), cfg)
+            check("发出去了" in said, "回串也要能发：%r" % said)
+            replies = [record for record in posted
+                       if record["path"] == "/Home/Forum/doReplyThread.html"]
+            check(bool(replies), "回串走 doReplyThread")
+            check('name="resto"' in replies[-1]["body"] and "50000002" in replies[-1]["body"],
+                  "回串要带 resto")
+
+            # 闸门：岛上这个桶一分钟两条
+            check("没发" in xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"fid": 57, "content": "第三条"}}), cfg),
+                "一分钟两条之后要拦住")
+            check(os.path.isfile(alerts.path_of(cfg)), "闸住之后网页顶上要留一条")
+            with io.open(alerts.path_of(cfg), encoding="utf-8") as handle:
+                check(json.load(handle).get("kind") == "xdao_post_blocked",
+                      "提示要带 xdao_post_blocked")
+
+            # 服务端拒了：把那句话带回来，别假装发成功
+            limit_reset = os.path.join(workdir, "outbound.json")
+            os.remove(limit_reset)
+            said = xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"fid": 57, "content": "坏的"}}), cfg)
+            check("岛那边说" in said and "不能同时为空" in said,
+                  "服务端拒了要照实说：%r" % said)
+
+            # 回话里什么都不说（岛的真实情况）：回板上找一次，把号捞回来
+            os.remove(limit_reset)
+            said = xdao.call("xdao", json.dumps(
+                {"action": "post", "params": {"fid": 57, "content": "中和的一条"}}), cfg)
+            check("发出去了：No.69700002" in said,
+                  "没回号就回读一次，别只说一句不确定：%r" % said)
+
+            # 读也要带饼干（受限版面不带就回 {"error": …}），那句 error 要说人话
+            xdao.api = real_api
+            reads = []
+            data = xdao.api("/Api/showf?id=4&page=1", cfg)
+            check(isinstance(data, list), "读接口该回数组")
+            check(reads and reads[-1]["cookie"] == "userhash=test-cookie",
+                  "有饼干时读也要带上：%r" % (reads[-1] if reads else None))
+            try:
+                xdao.api("/Api/showf?id=27&page=1", cfg)
+            except xdao.XdaoError as exc:
+                check("需要饼干" in str(exc), "受限版面要把它那句话带出来：%r" % str(exc))
+            # ── 搜索：社区那台全文检索（假数据） ─────────────────────────
+            real_search = xdao._search_json
+            try:
+                body = {"total": {"threads": 2, "replies": 40, "truncated": False,
+                                  "cap": 1000},
+                        "results": [
+                            {"id": 69696800, "kind": "thread", "fid": 27,
+                             "title": "无标题", "content": "求肥哥参谋订阅",
+                             "post_time": "2026-10-28T12:00:00", "reply_count": 5,
+                             "user_hash": "2rAvVQK"},
+                            {"id": 69688518, "kind": "reply", "fid": 27, "title": "",
+                             "content": "随便找个agent许愿",
+                             "post_time": "2026-10-27T12:00:00", "reply_count": 0,
+                             "user_hash": "Je8IKY1"}]}
+                seen_search = []
+
+                def fake_search(path, params, config=None):
+                    seen_search.append((path, dict(params)))
+                    if path.startswith("/api/v1/thread-of/"):
+                        if path.endswith("/64792841"):
+                            return {"kind": "thread", "thread_id": 64792841}, None
+                        return {"kind": "reply", "thread_id": 64792841}, None
+                    return body, "147"
+
+                xdao._search_json = fake_search
+                said = xdao.call("xdao", json.dumps(
+                    {"action": "search", "params": {"q": "显卡", "size": 5}}), cfg)
+                check("搜「显卡」· 串 2 · 回复 40 · 全部 · 相关度 · 今天还剩 147 次"
+                      in said, "搜索抬头要报份数、范围和余量：%r" % said.splitlines()[0])
+                check("No.69696800 [27] 2026-10-28 · 回 5 · 2rAvVQK" in said,
+                      "串那条要一行能读：%r" % said[:200])
+                check("（回复）" in said and "where" in said,
+                      "回复那条要标明是回复、并给出反查提示")
+                check(seen_search[-1][0] == "/api/v1/search"
+                      and seen_search[-1][1]["q"] == "显卡"
+                      and seen_search[-1][1]["size"] == 5,
+                      "参数要照传：%r" % (seen_search[-1],))
+                check("要搜什么" in xdao.call("xdao", json.dumps(
+                    {"action": "search", "params": {}}), cfg), "空搜索要给一句话")
+
+                check(xdao.call("xdao", json.dumps(
+                    {"action": "where", "params": {"id": 64792841}}), cfg) ==
+                      "No.64792841 本身就是一条串。", "反查：串本身")
+                check(xdao.call("xdao", json.dumps(
+                    {"action": "where", "params": {"id": 64792888}}), cfg) ==
+                      "No.64792888 是串 No.64792841 里的回复。", "反查：回复属于哪个串")
+                check("要给编号" in xdao.call("xdao", json.dumps(
+                    {"action": "where", "params": {"id": "abc"}}), cfg), "反查要数字")
+
+                def broken_search(path, params, config=None):
+                    raise xdao.XdaoError("搜索那边今天的额度用完了")
+
+                xdao._search_json = broken_search
+                check("额度用完" in xdao.call("xdao", json.dumps(
+                    {"action": "search", "params": {"q": "x"}}), cfg),
+                    "搜索被限流要照实说")
+            finally:
+                xdao._search_json = real_search
+        finally:
+            for key in ("XDAO_COOKIE", "XDAO_BASE"):
+                os.environ.pop(key, None)
+            island.shutdown()
+    finally:
+        xdao.api = real_api
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def check_xdao_feed() -> None:
+    """岛上那条"听"的通道：只问她自己的串、只攒着、不叫醒她。
+
+    `xdao.api` 和网关都换成假的，所以不联网；但走的是真的 `collect` / `poll_once` / 记账。
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from rin.tools import xdao
+    from rin.xdao import feed, threads
+
+    workdir = tempdir("xfeed-")
+    real_api = xdao.api
+    inbox = []
+
+    class _Gateway(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            inbox.append({"item": body,
+                          "auth": self.headers.get("Authorization") or ""})
+            raw = json.dumps({"ok": True, "id": len(inbox)}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    gateway = ThreadingHTTPServer(("127.0.0.1", 0), _Gateway)
+    threading.Thread(target=gateway.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:%d" % gateway.server_address[1]
+    try:
+        cfg = _loop_config(name="自检", data_dir=workdir)
+        settings.save(workdir, {"xdao_name": "wPFEjuL"})
+
+        check(threads.known(cfg) == {}, "一开始没有她自己的串")
+        threads.remember(cfg, "69703583", "117", "接入测试")
+        check("69703583" in threads.known(cfg), "记下来的串要在账上")
+        check(threads.seen(cfg, "69703583") == 0, "还没送过任何一条")
+        threads.note_seen(cfg, "69703583", 100)
+        threads.note_seen(cfg, "69703583", 90)
+        check(threads.seen(cfg, "69703583") == 100, "只往前走，不后退")
+
+        first = threads.feed_uuid(cfg)
+        check(first and threads.feed_uuid(cfg) == first,
+              "订阅 ID 只生成一次、之后复用（first=%r）" % (first,))
+        check(first in json.dumps(threads.load(cfg)), "订阅 ID 跟这份账存在一起")
+
+        def fake(path, config=None):
+            if path.startswith("/Api/thread"):
+                return {"id": 69703583, "ReplyCount": 3, "Replies": [
+                    {"id": 101, "user_hash": "wPFEjuL", "now": "2026-10-30 10:00",
+                     "content": "这是她自己回的一句"},
+                    {"id": 102, "user_hash": "Tips", "now": "2026-10-30 10:01",
+                     "content": "别人回了一句<br>还带换行"},
+                    {"id": 103, "user_hash": "Boen", "now": "2026-10-30 10:02",
+                     "content": "又一个人回"}]}
+            raise AssertionError("没料到的地址：%s" % path)
+
+        xdao.api = fake
+        items, marks = feed.collect(cfg, lambda text: None)
+        check(len(items) == 2, "自己说的那条不该再告诉她：%d 条" % len(items))
+        check(items[0]["policy"] == "batch",
+              "一律只攒着、不叫醒她：%r" % items[0]["policy"])
+        check(items[0]["chat_type"] == "thread"
+              and items[0]["chat_id"] == "xdao:69703583", "会话身份要带通道前缀")
+        check(items[0]["ext_id"] == "r102" and items[0]["source"] == "岛",
+              "外部编号要能去重：%r" % items[0])
+        check("还带换行" in items[0]["text"], "回复正文要摊成纯文字：%r" % items[0]["text"])
+        check(marks["69703583"] == 103, "这一轮看到的最大号：%r" % marks)
+
+        added = feed.poll_once(cfg, base, "tok", lambda text: None)
+        check(added == 2 and len(inbox) == 2, "两条都要推进去：%r" % added)
+        check(inbox[0]["auth"] == "Bearer tok", "推给网关要带令牌")
+        check(inbox[0]["item"]["chat_name"] == "接入测试", "会话名字要带上串标题")
+        check(threads.seen(cfg, "69703583") == 103, "推进去了才记账")
+
+        check(feed.poll_once(cfg, base, "tok", lambda text: None) == 0
+              and len(inbox) == 2, "同一个号不该推第二遍")
+    finally:
+        xdao.api = real_api
+        gateway.shutdown()
         shutil.rmtree(workdir, ignore_errors=True)
 
 

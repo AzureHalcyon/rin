@@ -18,6 +18,8 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import hmac
 import json
 import os
@@ -65,6 +67,103 @@ def _mtime(path: str) -> str:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(path)))
     except OSError:
         return ""
+
+
+# ── 图：落地 + 要不要顺手看一眼 ───────────────────────────────────────────────
+# 图从通道进来时是字节或一个地址，落到她工作区里（`收件/<日期>/`），进件里只写
+# 一行事实。**图片本身不进上下文**：她的记录是文本流，`_turns()` 每步都重新渲染成
+# 字符串，压缩也只吃文字；把图塞进去要同时改存储、渲染、压缩、预算四处，而旧块会
+# 一直背着它。她自己就看得见——核心拼请求时会把路径变成 image_url 段。
+_IMAGE_DIR = "收件"
+_MAX_IMAGES = 4                      # 一条进件最多收几张：再多是刷屏，不是"发来一张图"
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_IMAGE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
+
+
+def _ext_of(raw: bytes) -> str:
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def _save_image(data_dir: str, raw: bytes, index: int) -> str:
+    """存进 `收件/<日期>/`，返回相对工作区的路径（`收件/2026-10-30/221305-2.jpg`）。"""
+    folder = os.path.join(os.path.abspath(data_dir), "workspace",
+                          _IMAGE_DIR, time.strftime("%Y-%m-%d"))
+    name = "%s-%d%s" % (time.strftime("%H%M%S"), index, _ext_of(raw))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name), "wb") as handle:
+        handle.write(raw)
+    return "/".join((_IMAGE_DIR, time.strftime("%Y-%m-%d"), name))
+
+
+def _image_bytes(item) -> bytes:
+    """进件里的一个图：`{"b64": ...}` 是她这头传上来的，`{"url": ...}` 是外面给的。"""
+    if not isinstance(item, dict):
+        return b""
+    encoded = str(item.get("b64") or "").strip()
+    if encoded:
+        if "," in encoded[:64]:          # `data:image/png;base64,xxxx` 这种整串
+            encoded = encoded.split(",", 1)[1]
+        try:
+            return base64.b64decode(encoded, validate=False)
+        except Exception:
+            return b""
+    url = str(item.get("url") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return b""
+    request = urllib.request.Request(url, headers={"User-Agent": _IMAGE_UA})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.read(_MAX_IMAGE_BYTES + 1)
+    except Exception:
+        return b""
+
+
+def _size_of(raw: bytes) -> tuple:
+    """(宽, 高)；读不出来就是 (0, 0)。"""
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(raw)) as image:
+            return int(image.size[0]), int(image.size[1])
+    except Exception:
+        return 0, 0
+
+
+def _image_block(data_dir: str, images) -> tuple:
+    """把进件里的图收下来。回来 `(要写进正文的那几行, 挂在 meta 上的图清单)`。
+
+    图片**不在这里看**：她那个模型自己就看得见，核心会把清单里那些路径拼成
+    `image_url` 段。这一层只管两件事——落地、给正文留一行事实（多大的图片、在哪儿）。
+    """
+    if not isinstance(images, list) or not images:
+        return "", []
+    lines, landed = [], []
+    for index, item in enumerate(images[:_MAX_IMAGES], start=1):
+        raw = _image_bytes(item)
+        if not raw:
+            lines.append("（有一张图没取到）")
+            continue
+        if len(raw) > _MAX_IMAGE_BYTES:
+            lines.append("（有一张图太大，不收了）")
+            continue
+        try:
+            rel = _save_image(data_dir, raw, index)
+        except OSError as exc:
+            lines.append("（有一张图存不下：%s）" % exc)
+            continue
+        width, height = _size_of(raw)
+        if width and height:
+            lines.append("（一张 %d×%d 的图：%s）" % (width, height, rel))
+        else:
+            lines.append("（一张图片：%s）" % rel)
+        landed.append({"path": "workspace/" + rel, "w": width, "h": height})
+    return "\n".join(lines), landed
 
 
 def _block_view(block, fold_keep: int, user_name: str = "") -> dict:
@@ -240,12 +339,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _say(self):
         payload = self._body()
         text = str(payload.get("text") or "").strip()
+        # 网页这头就是人跟她说话：图收下来进工作区，清单挂进 meta，
+        # 核心拼请求时会把它们变成 image_url 段——她自己就看得见。
+        block, landed = _image_block(self.server.data_dir, payload.get("images"))
+        if block:
+            text = ("%s\n%s" % (text, block)).strip() if text else block
         if not text:
             return self._send(400, {"error": "没有正文"})
         # 网页说的一句：正文直接进记录（她就坐在这头跟我说话），
         # 但来源照实写——网页「消息」页上要看得见它是从哪儿来的。
-        item_id = _store_of(self.server).push("user", text, source="网页",
-                                             direct=True)
+        item_id = _store_of(self.server).push(
+            "user", text, source="网页", direct=True,
+            meta={"images": landed} if landed else None)
         return self._send(200, {"ok": True, "id": item_id})
 
     def _set_channel(self):
@@ -275,14 +380,24 @@ class _Handler(BaseHTTPRequestHandler):
         字段：text 必填；kind 默认 user；其余 source / chat_type / chat_id /
         chat_name / sender_id / sender_name / policy / meta 可选。
         policy 不传就继承这个会话在 chats 里的策略。
+        images 可选：`[{"b64": …}]` 或 `[{"url": …}]`，收下来的图进工作区，
+        进件正文里只留一行事实（私聊里顺带把"图里是什么"也写进去）。
         """
         payload = self._body()
         text = str(payload.get("text") or "").strip()
+        images = payload.get("images")
+        landed = []
+        if isinstance(images, list) and images:
+            block, landed = _image_block(self.server.data_dir, images)
+            if block:
+                text = ("%s\n%s" % (text, block)).strip() if text else block
         if not text:
             return self._send(400, {"error": "没有正文"})
         meta = payload.get("meta")
         if not isinstance(meta, dict):
             meta = {}
+        if landed:
+            meta = dict(meta, images=landed)
         store = _store_of(self.server)
         source = str(payload.get("source") or "")
         raw_ext = str(payload.get("ext_id") or "")
@@ -531,38 +646,39 @@ class _Handler(BaseHTTPRequestHandler):
                 "embed_host": str(getattr(self.server, "embed_host", "") or "")}
 
     # ── 设置视图 ──────────────────────────────────────────────────────────
-    # 真实注入顺序：system 先（声音 → 机制 → 她自己写的那段），再工具描述
-    # （按工具面的顺序：记忆 → wait → 收件箱 → 上网 → 命令 → 工作区 → B 站 → QQ），
-    # 最后是"用到时才拼进去"的那几份。设置页按这个顺序排。
+    # 真实注入顺序：system 先（开场声音 → 她自己写的那段 → 机制与边界），再工具描述
+    # （按工具面的顺序：记忆 → wait → 收件箱 → 上网 → 命令 → 工作区 → B 站 → 看图 → QQ → 岛），
+    # 最后是"用到时才拼进去"的那几份。设置页按这个顺序分四块：常驻 / 工具 / 归档 / 其他。
     _PROMPTS_IN_ORDER = (
-        ("voice", "常驻 System"),
-        ("sink", "常驻 System"),
-        ("persona-written", "常驻 System"),
-        ("remember", "工具描述"),
-        ("link", "工具描述"),
-        ("recall", "工具描述"),
-        ("recollect", "工具描述"),
-        ("forget", "工具描述"),
-        ("rename", "工具描述"),
-        ("wait", "工具描述"),
-        ("channels", "工具描述"),
-        ("channels_set", "工具描述"),
-        ("messages", "工具描述"),
-        ("fetch", "工具描述"),
-        ("search", "工具描述"),
-        ("run", "工具描述"),
-        ("write", "工具描述"),
-        ("bilibili_search", "工具描述"),
-        ("bilibili_video", "工具描述"),
-        ("bilibili_subtitles", "工具描述"),
-        ("bilibili_playurl", "工具描述"),
-        ("bilibili_transcript", "工具描述"),
-        ("qq", "工具描述"),
-        ("compress-system", "按需调用"),
-        ("compress", "按需调用"),
-        ("watchdog", "按需调用"),
-        ("persona", "按需调用"),
-        ("ask", "按需调用"),
+        ("voice", "常驻"),
+        ("persona-written", "常驻"),
+        ("sink", "常驻"),
+        ("remember", "工具"),
+        ("link", "工具"),
+        ("recall", "工具"),
+        ("recollect", "工具"),
+        ("forget", "工具"),
+        ("rename", "工具"),
+        ("wait", "工具"),
+        ("channels", "工具"),
+        ("channels_set", "工具"),
+        ("messages", "工具"),
+        ("fetch", "工具"),
+        ("search", "工具"),
+        ("run", "工具"),
+        ("write", "工具"),
+        ("bilibili_search", "工具"),
+        ("bilibili_video", "工具"),
+        ("bilibili_subtitles", "工具"),
+        ("bilibili_playurl", "工具"),
+        ("bilibili_transcript", "工具"),
+        ("qq", "工具"),
+        ("xdao", "工具"),
+        ("compress-system", "归档"),
+        ("compress", "归档"),
+        ("watchdog", "归档"),
+        ("persona", "归档"),
+        ("ask", "其他"),
     )
 
     def _prompt_rows(self, config) -> list:
@@ -575,7 +691,7 @@ class _Handler(BaseHTTPRequestHandler):
                 rows.append({
                     "key": key, "section": section,
                     "label": "自我描述 · 她自己写的",
-                    "desc": "她在后台整理出来的那一段：接在 sink 之后、旧段之前。"
+                    "desc": "她在后台整理出来的那一段：接在开场（声音）之后、机制之前。"
                             "「自我描述」关掉时不注入。",
                     "file": "persona.md", "default": "", "override": "",
                     "text": persona.read(config), "resettable": False,

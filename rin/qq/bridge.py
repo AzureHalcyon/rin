@@ -154,6 +154,27 @@ def _plain_text(message) -> str:
     return _SPACES.sub(" ", _CQ.sub("", "".join(parts))).strip()
 
 
+def _image_urls(message) -> List[str]:
+    """消息里那几张图的地址。
+
+    图**不在这里下载**：适配器只管把地址递进去，存哪儿、要不要顺手看一眼，
+    都是网关那侧的事（它知道工作区和视觉模型在哪儿）。
+    """
+    if isinstance(message, str):
+        found = []
+        for match in re.finditer(r"\[CQ:image,[^\]]*url=([^,\]]+)", message):
+            found.append(urllib.parse.unquote(match.group(1)))
+        return found
+    urls = []
+    for segment in message or []:
+        if not isinstance(segment, dict) or segment.get("type") != "image":
+            continue
+        url = str((segment.get("data") or {}).get("url") or "").strip()
+        if url:
+            urls.append(url)
+    return urls
+
+
 def _mentioned(message, self_id: str) -> bool:
     if isinstance(message, str):
         return ("[CQ:at,qq=%s]" % self_id) in message
@@ -210,6 +231,11 @@ class Bridge:
         # 群里：群名片（card）优先；私聊：好友备注（remark）优先——见 _friend_remark
         name = str(sender.get("card") or nickname)
         text = _plain_text(event.get("message") or event.get("raw_message") or "")
+        images = _image_urls(event.get("message") or event.get("raw_message") or "")
+        if images:
+            # 图单独走 images 字段：正文里那个占位标记就不留了，
+            # 「一张 1024×768 的图：收件/…」由网关那侧按真尺寸写。
+            text = re.sub(r"\[image\]\s*", "", text).strip()
 
         policy = ""
         if chat_type == "group":
@@ -230,8 +256,8 @@ class Bridge:
             name = self._friend_remark(user_id) or nickname
             chat_name = name
             group_id = ""
-        if not text:
-            return self._drop(event, "没有文字（图片/表情之类）")
+        if not text and not images:
+            return self._drop(event, "没有文字（表情/语音/文件之类）")
 
         chat_id = group_id if chat_type == "group" else user_id
         return {
@@ -243,6 +269,8 @@ class Bridge:
             "sender_id": user_id,
             "sender_name": name,
             "text": text,
+            # 图只递地址：存哪儿、看不看，网关那侧决定（它知道工作区和视觉模型）
+            "images": [{"url": url} for url in images[:4]],
             # 群里能走到这里就说明被 @ 了：这一条明确叫她（wake）；没 @ 的群消息
             # 走的是 batch，攒着等她自己看，不打断她。
             "policy": policy,

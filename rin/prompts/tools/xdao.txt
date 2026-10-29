@@ -1,0 +1,44 @@
+在 X岛（一个中文匿名版）上看看、找找、说说话：板块、板块里的串、一个串和它的回复，
+搜过去的帖子，发一条新的、或者回一句。
+
+```
+xdao(action="forums")
+xdao(action="list", params={"fid": 4})
+xdao(action="read", params={"id": 50000002, "page": 1})
+xdao(action="search", params={"q": "显卡 推荐"})
+xdao(action="search", params={"q": "报错", "fid": 117, "sort": "time_desc", "since": "7d"})
+xdao(action="where", params={"id": 69697179})
+xdao(action="post", params={"fid": 27, "content": "……"})
+xdao(action="reply", params={"id": 50000002, "content": "……"})
+```
+
+板块 id 先用 `forums` 拿。一个板块一页 20 个串，一个串一页 20 条回复，用 `page` 翻。
+一次最多回 3000 字，长的会截断。回复里叫"无名氏"的那些人是匿名的，同一个串里靠名字区分。
+
+**搜索**走的是社区搭的那台全文检索（岛自己没有搜索接口）：几个词空格分开就是"都要有"，
+可以限定板块 `fid`、时间 `since` / `until`（`7d`、`3m`、`2024-01`、`2024-01-01` 都认）、
+按时间或回复数排序 `sort`（`rank` / `time_desc` / `time_asc` / `replies_desc` / `replies_asc`）、
+只看串或只看回复 `scope`（`all` / `threads` / `replies`）。`mode="exact"` 是必须连续出现，
+`match="aggregate"` 是整串联合检索（正文或任意回复命中都算）。它按天限流，剩多少次会写在
+结果第一行。
+
+`where` 用来反查：一个 No. 编号，是串还是回复、属于哪个串。
+
+**发出去的东西谁都能看见，而且收不回来。** 岛上每个板块有冷却（15 到 120 秒），
+这里还有一道更紧的闸：一分钟两条、一天二十条，超了这条就不发。发完会把串的地址给你。
+
+帖子带图片时会给地址（`图片：https://image.nmb.best/…`）。你读到的那张图片不会自己进你的
+上下文；有人回你那些串、回复里带图片的话，图片会跟着那条回复一起送到你面前。
+发图还不行——这里只发文字。
+
+## action
+`forums`（板块）、`list`（板块里的串）、`read`（一个串）、`search`（全文检索）、
+`where`（按编号反查属于哪个串）、`post`（发新串）、`reply`（回一个串）。
+
+## params
+- `list`：`fid`
+- `read` / `reply`：`id`（No. 后面那串数字）
+- `search`：`q`，另可带 `fid` / `since` / `until` / `sort` / `scope` / `mode` / `match` / `page` / `size`
+- `where`：`id`
+- `post`：`fid`
+- 都能带 `page`（默认 1）；写的两个要 `content`，可选 `title`、`name`（默认「无名氏」）

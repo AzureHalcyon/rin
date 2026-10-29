@@ -1,0 +1,20 @@
+[Unit]
+Description=rin 岛通道：看她自己那几个串的新回复（只攒着，不叫醒她）
+After=network-online.target palimpsest.service
+Wants=palimpsest.service
+
+[Service]
+Type=simple
+User=palimpsest
+WorkingDirectory=/opt/rin
+Environment=PYTHONPATH=/opt/rin
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rin/.venv/bin/python -m rin.xdao --gateway http://127.0.0.1:8080 --data data
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

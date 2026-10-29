@@ -54,6 +54,9 @@ TOOLS: Dict[str, Tuple[str, str, List[str]]] = {
            "给 QQ 那边发一个动作：收发消息、看群和好友、改资料、空间。"
            "常用三个直接写在说明里，其余看 <数据>/workspace/QQ-动作清单.md。",
            ["action", "params"]),
+    "xdao": ("工具 · xdao",
+             "看 X岛 的板块、串列表、一个串和它的回复（只读）。",
+             ["action", "params"]),
 }
 
 

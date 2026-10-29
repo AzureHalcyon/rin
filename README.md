@@ -12,7 +12,7 @@
 
 | 在这一侧 | 在 palimpsest |
 |---|---|
-| 工具实现：`run` / `fetch` / `search` / `write` / `bilibili` / `qq` | 循环引擎：`driver` / `context` / `compress` / `store` |
+| 工具实现：`run` / `fetch` / `search` / `write` / `bilibili` / `look` / `qq` / `xdao` | 循环引擎：`driver` / `context` / `compress` / `store` |
 | 工具描述文本（`prompts/tools/*.txt`） | 提示词的登记、渲染与校验 |
 | 记忆工具面：参数 → 动词 → 一句话 | 记忆算法与六个动词（`memory_v2.api`） |
 | 网关、本机入口、设置表 | 引擎自己的工具：`wait` |
@@ -28,11 +28,12 @@ rin/
   app.py             装配线：工具表、提示词登记
   cli.py             命令行（--stdin / --http / --say）
   gateway.py         网页网关（/feed /state /inbox /settings /archive）
+  vision.py          看图：把一张图交给视觉模型，拿回一段话
   web/index.html     单页界面
   settings.py        设置表
   memory_bridge.py   记忆工具面
   tool_texts.py      工具描述名单
-  tools/             shell / webtools / workspace / web_access / landlock / bilibili / qq
+  tools/             shell / webtools / workspace / web_access / landlock / bilibili / look / qq / xdao
   prompts/tools/     各工具的描述（`wait` 的描述在核心）
   qq/                QQ 通道适配器（收事件进收件箱、按 via 定向回发）
 checks/              自检
@@ -96,6 +97,110 @@ DeepSeek 的 `/v1/tools/fetch`。搜索分三级：DeepSeek `/v1/tools/search`�
 搜索、元数据、字幕、直链四步的接口与风控降级沿用上游，`rin/tools/bilibili.py` 重写到
 Python 这一侧，并加了 `transcript`（没字幕时抽音轨转写）。上游本身是 DeepSeek
 Harness 插件，本仓不依赖它运行。
+
+### 看图
+
+**图片跟着消息进对话**，不另接视觉模型——她那个 `deepseek-v4.1-flash` 端点本身就吃 OpenAI
+的 `image_url` 段（实测：一张卡片图 3.2 秒读出上面的字，prompt 234 token）。
+
+落地与进上下文是两件事：
+
+- 图片落在 `<data>/workspace/收件/<日期>/`，正文里只留一行事实
+  （`（一张 1024×768 的图：收件/2026-10-30/x.jpg）`）；
+- 进件把图片的**路径**挂进 `meta.images`，核心的 `_inbox_entry()` 把那条消息的 `content`
+  拼成段数组：`[{"type":"text",…},{"type":"image","path":"workspace/收件/…"}]`；
+- 拼请求时（`_turns()` → `_data_uri()`）才读文件、缩到长边 1024、转 data URI。
+  **库里存的是路径，不是字节**——一张图片一兆，不这样库和备份都受不了。
+
+**图片保质期是 `image_keep_steps` 步（默认 10，设置页「图片」那一组里能改）**：最近这么多步
+里的带图消息才真把图发出去；更早的只留那行字，要在意就翻记录。估 token 时一张图片按 800 算，
+而且只算保质期内那些——不然每一步都在为旧图付钱，块一滚还会把上下文挤满。
+
+- 私聊、群里、网页来的图片都走这一条路（谁发的都一样，都是"她看见了一张图"）；
+- 岛那边：有人回她的串、回复里带图片的，`rin/xdao/feed.py` 会把图落地并挂到进件上；
+- 图片段只出现在**对方说的话**里；她自己说的话、工具结果都还是纯文字。
+### X岛
+
+匿名版的入口：`xdao(action, params)`，七个动作——板块 → 板块里的串 → 一个串和它的回复 → 搜索：
+
+```
+xdao(action="forums")
+xdao(action="list", params={"fid": 4, "page": 1})
+xdao(action="read", params={"id": 50000002, "page": 1})
+xdao(action="search", params={"q": "显卡 推荐", "fid": 75, "sort": "time_desc"})
+xdao(action="where", params={"id": 64792888})
+```
+
+读不用登录、不用饼干：`/Api/getForumList`、`/Api/showf`、`/Api/thread` 三个公开接口，
+只认一个客户端 UA（这个站不管 `Accept-Encoding` 写什么都回 gzip，代码里先收字节再解）。
+一个板块一页 20 个串、一个串一页 20 条回复，一次最多往记录里放 3000 字。
+
+**有饼干时读也会带上**：`27 AI` 这类**受限版面**不带饼干只回 `{"error": …}`，带了才给串
+（2026-10-29 实测；备用 API `api.nmb.best` 不必要）。
+
+帖子带图的会给出 `https://image.nmb.best/…` 的地址——正好交给 `look(url=…)` 去看。
+接口里那个叫 `user_hash` 的字段是**串内显示的名字**（串主、回复都靠它区分谁是谁），
+这个站的"饼干"是同一回事：没有账号，只有一块 cookie。
+
+### 岛上的搜索
+
+岛**自己没有**搜索接口。社区有人搭了一台全文检索（XDS，FastAPI，2026-10-29 起开放七天试验），
+四个端点：检索 / 板块列表 / 规模 / 按编号反查所属串：
+
+```
+GET https://xds.wol.moe/api/v1/search?q=…&scope=all|threads|replies&sort=rank|time_desc|…
+GET https://xds.wol.moe/api/v1/thread-of/<编号>
+```
+
+- **UA 有讲究**：我起一个 `Rin/0.1` 被 403（`reason: ua`）；他公告里那串公开测试 UA
+  `XdnmbSearch/1.0 (PublicTest 261029)` 和浏览器 UA 才放行。所以默认用前者，
+  想换成被登记的 UA 就在设置页填 `xdao_search_ua`。
+- **限流**：两次之间最少 5 秒、每天 150 次；剩余次数在响应头 `X-RateLimit-Remaining`，
+  我们把它写进结果第一行。代码里也挡一道 5 秒。
+- 支持分词（`mode=terms`）与连续匹配（`mode=exact`）、整串联合检索（`match=aggregate`）、
+  板块 `fid`、时间 `since`/`until`（`7d`、`3m`、`2024-01`）、排序、分页（`size` 上限 50）。
+- 作者明确不做：按饼干搜发言、以及速报2/日记/自救互助这几个板块不入索引。
+
+写（`post` / `reply`）走网页表单那条路：`POST Home/Forum/doPostThread.html`（字段
+`fid` / `name` / `title` / `content`，multipart）和 `doReplyThread.html`（`resto` 代替
+`fid`）。身份只用一块 cookie `userhash`，存在设置页「岛」组。
+
+### 听：她自己那几个串的回复
+
+岛没有推送。所以另有一个小进程盯着**她自己的串**（发过、回过的那些，记在
+`<数据>/xdao-threads.json`）：每 `xdao_feed_interval` 秒（默认 300）拉一次每串的最后一页，
+比"已经送过的最大号"新的、而且不是她自己（按 `xdao_name` 那个落款挡）的回复，就推给网关的
+收件箱。
+
+```
+python -m rin.xdao --gateway http://127.0.0.1:8080 --data data
+```
+
+- 令牌不用写在 unit 里：没给 `--token` 就读 `<数据>/web-token`。
+- **一律 `policy="batch"`——只攒着，不叫醒她。** 公开版块里别人回一句，不该打断她手上的事；
+  她想看的时候用 `messages`，网页「消息」页也看得见。
+- 送不进去就不推进"已送过的号"，下一轮还从这儿来；同一个号推第二遍由网关按 `ext_id` 去重。
+- 发完/回完会顺手 `addFeed` 订阅上（订阅 ID 是客户端自己起的一串，存在那份账里，可跨客户端搬）。
+- 服务单元在 `deploy/xdao-feed.service`。
+
+**饼干是两个东西**：cookie 值是站上「复制饼干」复制出来的那串（URL 编码的），而串里
+显示的是另一个短名字。社区那个 Dart 包（[`orzogc/xdnmb_api`](https://github.com/orzogc/xdnmb_api)）
+把它们分得很清楚：
+
+```dart
+class XdnmbCookie {
+  final String userHash;   // 饼干的 userhash —— 这才是 cookie 值
+  final String? name;      // 饼干显示的名字 —— 串里挂的那个
+  String get cookie => 'userhash=$userHash';
+}
+```
+
+站点是**真在校验**这块值：把它改掉一个字节，`/Home/Forum/feed.html` 立刻回
+「请确认饼干是否应用正确」；原样就放行。所以别拿显示名当 cookie 用。
+
+出站按通道分桶（`rin/limit.py`）：QQ 20 条/分、400 条/天；岛 **2 条/分、20 条/天**
+（站上每个板块另有 15–120 秒冷却）。超了这条不发，网页顶上挂一条提示。发完会回读一次
+把串号捞回来——岛对发串的回话是一张跳转页，什么号都不给。
 
 ### QQ
 

@@ -204,6 +204,17 @@ details.frow>summary:hover{color:var(--fg2)}
 .composer .send:disabled{opacity:.3;cursor:default}
 .composer .send:active:not(:disabled){transform:scale(.94)}
 .composer .send svg{width:18px;height:18px;display:block}
+.composer .attach{flex:none;width:36px;height:36px;border-radius:50%;display:grid;
+  place-items:center;color:var(--faint);cursor:pointer;transition:color .12s,background .12s}
+.composer .attach:hover{color:var(--fg);background:var(--hover)}
+.composer .attach svg{width:18px;height:18px;display:block}
+#attached{max-width:760px;margin:6px auto 0;gap:6px;flex-wrap:wrap}
+#attached .thumb{position:relative;width:56px;height:56px;border-radius:8px;overflow:hidden;
+  border:1px solid var(--line2)}
+#attached .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+#attached .thumb button{position:absolute;top:2px;right:2px;width:18px;height:18px;border:0;
+  border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font:11px/18px sans-serif;
+  cursor:pointer;padding:0}
 .spinner{width:15px;height:15px;border-radius:50%;border:2px solid var(--bg);
   border-top-color:transparent;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -475,12 +486,19 @@ details.sub .sb{padding:4px 0 2px 8px;border-left:2px solid var(--line);
         <div class="gutter" id="gutter"><div class="gin" id="gutter-in"><div class="n">1</div></div></div>
         <textarea id="say" rows="1" placeholder="说点什么…"></textarea>
       </div>
+      <label class="attach" id="attach" title="发张图（也可以直接粘进输入框）">
+        <input type="file" id="pick" accept="image/*" multiple hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18"
+          height="14" rx="2"/><circle cx="8.5" cy="10" r="1.7"/><path d="m21 16-4.5-4.5L9 19"/></svg>
+      </label>
       <button class="send" id="send" title="发送" aria-label="发送">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/>
           <path d="m5 12 7-7 7 7"/></svg>
       </button>
     </div>
+    <div id="attached" style="display:none"></div>
     <div id="statusline">
       <span class="spin" id="st-steps"></span><span class="sep">·</span>
       <span class="spin" id="st-tokens"></span><span class="sep">·</span>
@@ -549,7 +567,8 @@ const $ = (id) => document.getElementById(id);
 const S = {token: localStorage.getItem("palimpsest.token") || "",
   since: "0:0", step: 0, lastStep: -1, pinned: true, sending: false, models: null,
   polling: false,
-  usage: new Map(), calls: new Map(), ctxAt: 0, cache: null, statusKind: ""};
+  usage: new Map(), calls: new Map(), ctxAt: 0, cache: null, statusKind: "",
+  images: []};
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -1156,8 +1175,49 @@ const ta = $("say"), gutter = $("gutter"), gin = $("gutter-in"), mirror = $("mir
 let drawnLines = 0;
 
 function refreshSend() {
-  $("send").disabled = S.sending || !ta.value.trim();
+  $("send").disabled = S.sending || (!ta.value.trim() && !S.images.length);
 }
+
+/* 图：最多四张，读成 data URL 直接塞进 /say —— 服务器那头会缩边、落地，
+   私聊里顺手把"图里是什么"也写进那条消息（她要的是看见，不是先问一句）。 */
+const MAX_IMAGES = 4, MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function readImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("读不了这个文件"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addFiles(files) {
+  for (const file of Array.from(files || [])) {
+    if (!file || !String(file.type || "").startsWith("image/")) continue;
+    if (S.images.length >= MAX_IMAGES) { toast("一条最多 " + MAX_IMAGES + " 张图"); break; }
+    if (file.size > MAX_IMAGE_BYTES) { toast("这张太大了（超过 8 MB）"); continue; }
+    try { S.images.push({b64: await readImage(file)}); } catch (e) { toast(e.message); }
+  }
+  drawAttached();
+  refreshSend();
+}
+
+function drawAttached() {
+  const box = $("attached");
+  box.innerHTML = S.images.map((item, index) =>
+    '<div class="thumb"><img src="' + item.b64 + '" alt="">' +
+    '<button data-drop="' + index + '" title="去掉">×</button></div>').join("");
+  box.style.display = S.images.length ? "flex" : "none";
+}
+
+$("pick").onchange = (event) => { addFiles(event.target.files); event.target.value = ""; };
+$("attached").onclick = (event) => {
+  const drop = event.target && event.target.getAttribute("data-drop");
+  if (drop === null) return;
+  S.images.splice(Number(drop), 1);
+  drawAttached();
+  refreshSend();
+};
 
 function syncGutter() {
   gin.style.transform = "translateY(" + (-ta.scrollTop) + "px)";
@@ -1197,16 +1257,20 @@ function measureComposer() {
 
 async function send() {
   const text = ta.value.trim();
-  if (!text || S.sending) return;
+  if ((!text && !S.images.length) || S.sending) return;
   S.sending = true;
   const btn = $("send");
   const icon = btn.innerHTML;
   btn.innerHTML = '<span class="spinner"></span>';
   refreshSend();
   try {
+    const payload = {text};
+    if (S.images.length) payload.images = S.images.map((item) => ({b64: item.b64}));
     await api("/say", {method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({text})});
+      body: JSON.stringify(payload)});
     ta.value = "";
+    S.images = [];
+    drawAttached();
     drawnLines = 0;
     measureComposer();
     S.pinned = true;
@@ -1223,6 +1287,17 @@ async function send() {
 $("send").onclick = send;
 ta.addEventListener("input", measureComposer);
 ta.addEventListener("scroll", syncGutter);
+ta.addEventListener("paste", (event) => {
+  const items = (event.clipboardData || {}).items || [];
+  const files = [];
+  for (const item of items) {
+    if (item.kind === "file" && String(item.type || "").startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length) { event.preventDefault(); addFiles(files); }
+});
 window.addEventListener("resize", () => { drawnLines = 0; measureComposer(); });
 measureComposer();
 $("thread").addEventListener("scroll", () => {

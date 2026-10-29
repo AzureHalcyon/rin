@@ -163,6 +163,23 @@ NapCat 每两分钟自动重试一次登录，连试 35 分钟：
 （连镜像里的 `/etc/machine-id` 一起换），腾讯那边就认成一台新设备，扫码要多一次
 "新设备"授权。宿主机名、`/app/.config/QQ` 都已经是固定的，不用动。
 
+## 接 X岛（一条只读的腿 + 一条听的腿）
+
+岛那边没有推送，所以是两条腿：
+
+- **工具**（`xdao`）在循环进程里跑，不用另起服务：看板块、看串、搜索、发串回串。
+  身份只要一块饼干（Cookie `userhash`），填在网页设置页「岛」组。
+- **听**（`xdao-feed.service`）：盯着她自己的串有没有人回，有就推给网关的收件箱，
+  一律 `policy="batch"`——只攒着、不叫醒她。
+
+装它：
+
+    sudo install -m 644 deploy/xdao-feed.service /etc/systemd/system/
+    sudo systemctl daemon-reload && sudo systemctl enable --now xdao-feed
+
+令牌不用写在 unit 里：没给 `--token` 就读 `<data>/web-token`（和网关同一个文件）。
+看日志：`sudo journalctl -u xdao-feed -f`，每轮一行 `[岛] …`。
+
 社区里同类问题的结论（都指向"云 + 新设备 + 异地"这个组合）：
 
 - NapCat 维护者（[issue #859](https://github.com/NapNeko/NapCatQQ/issues/859)）：
