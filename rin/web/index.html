@@ -114,6 +114,14 @@ body{display:flex;min-height:100vh}
 .dot.retry{background:var(--bad);animation:pulse .8s infinite}
 @keyframes pulse{50%{opacity:.2}}
 
+/* 落地侧写进来的提示（QQ 登不上之类）：顶栏下面一条，点掉就没了 */
+#alert{display:flex;align-items:center;gap:10px;padding:8px 22px;font-size:12.5px;
+  color:var(--fg);background:rgba(200,70,70,.09);border-bottom:1px solid var(--line);
+  border-left:3px solid var(--bad)}
+#alert .why{flex:1;min-width:0;line-height:1.5}
+#alert button{border:1px solid var(--line2);border-radius:6px;background:transparent;
+  color:var(--dim);font-size:11.5px;padding:1px 8px;cursor:pointer}
+
 #thread{flex:1;overflow-y:auto;padding:26px 0 40px}
 .wrap{width:100%;max-width:760px;margin:0 auto;padding:0 24px}
 
@@ -452,9 +460,12 @@ details.sub .sb{padding:4px 0 2px 8px;border-left:2px solid var(--line);
       <span class="pill"><span class="dot" id="h-dot"></span> <span id="h-status">—</span></span>
       <span class="pill" id="h-detail"></span>
       <button class="pill mbtn" id="h-model" title="换模型">—</button>
+      <button class="pill mbtn" id="h-archive" title="提前清：不等这块攒满，现在就把当前这块封口（压缩 → 补录 → 新开一块）">提前清</button>
       <button class="iconbtn" id="theme" title="切换深色/浅色">☾</button>
     </div>
   </div>
+
+  <div id="alert" style="display:none"><span class="why" id="alert-text"></span><button id="alert-x">知道了</button></div>
 
   <div id="thread"><div id="draft" style="display:none"></div><div class="wrap"><div class="empty" id="empty">还没有记录。</div></div></div>
 
@@ -584,6 +595,26 @@ function setTheme(mode) {
 darkQuery.addEventListener("change", applyTheme);
 applyTheme();
 $("theme").onclick = () => setTheme(isDark() ? "light" : "dark");
+
+$("alert-x").onclick = async () => {
+  $("alert").style.display = "none";
+  try { await api("/alerts/clear", {method: "POST"}); } catch (e) { }
+};
+
+/* 「归档」：只排一次队，真正的活在循环那边（没有新输入的那一步才跑）。
+   它要花两次模型调用，所以先问一句。 */
+$("h-archive").onclick = async () => {
+  if (!confirm("提前清？\n\n现在就把当前这块封口：压缩成一条摘要、补录正要失去原文的那块、写日记、微调自我描述，然后新开一块。\n眼前这块的原文会变成摘要。约两三次模型调用。")) return;
+  const button = $("h-archive");
+  button.disabled = true;
+  try {
+    await api("/archive", {method: "POST"});
+    button.textContent = "排上了";
+  } catch (e) {
+    button.textContent = "没排上";
+  }
+  setTimeout(() => { button.disabled = false; button.textContent = "提前清"; }, 5000);
+};
 
 async function api(path, opts) {
   opts = opts || {};
@@ -1057,6 +1088,16 @@ function paint(st) {
   $("h-detail").textContent = st.status.detail || "";
   S.models = st.models || S.models;
   $("h-dot").className = "dot " + (st.status.kind || "");
+
+  /* 落地侧的提示（比如 QQ 连着登不上、NapCat 已被停下）：有就挂在顶栏下面。 */
+  const alert = st.alert;
+  const alertBox = $("alert");
+  if (alert && alert.text) {
+    $("alert-text").textContent = alert.text;
+    alertBox.style.display = "";
+  } else {
+    alertBox.style.display = "none";
+  }
 
   /* 输入框下面这三个数**跟着记录走**：只算还挂在记录上的步，删一条就退一点。
      真实总账（不退）在设置里，见「用量总账」。 */

@@ -1,0 +1,16 @@
+[Unit]
+Description=NapCat 登录失败守护：连着 10 次登不上就停下容器，等人工扫码
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# 要调 docker，所以是 root；提示写给网页看的那份文件在数据目录里。
+Environment=ALERT_FILE=/opt/rin/data/alerts.json
+Environment=NAPCAT_FAIL_LIMIT=10
+ExecStart=/usr/bin/python3 /opt/napcat/guard.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

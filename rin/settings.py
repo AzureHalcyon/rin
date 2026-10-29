@@ -66,9 +66,10 @@ FIELDS = (
      "help": "一次请求最多多少 token；超了先丢最旧的段"},
     {"key": "band_budget", "group": "上下文", "label": "旧段预算", "type": "int",
      "min": 2000, "max": 200000, "help": "四段摘要合计的上限"},
-    {"key": "band_chars", "group": "上下文", "label": "四档长度", "type": "ints",
-     "count": 4, "min": 200, "max": 40000,
-     "help": "从最旧到最近四段摘要各自的最长字符数，逗号分隔"},
+    {"key": "band_chars", "group": "上下文", "label": "旧段长度", "type": "ints",
+     "count": [1, 4], "min": 200, "max": 40000,
+     "help": "旧摘要那一层的长度上限：只启用一档就给一个数（比如 9600）；"
+             "给四个数就是原来那套多档，越靠后越接近"},
     {"key": "band_decay", "group": "上下文", "label": "逐档收缩比", "type": "float",
      "min": 0.3, "max": 1.0, "help": "往老一格至少缩到这个比例"},
     {"key": "tool_fold_keep", "group": "上下文", "label": "工具结果保留条数",
@@ -183,6 +184,19 @@ def load(data_dir: str) -> dict:
     return {key: value for key, value in data.items() if key in _KEYS}
 
 
+def _count_range(field: dict) -> tuple:
+    """`count` 允许两种写法：一个数（必须正好这么多），或一对数（下限–上限）。"""
+    count = field.get("count", 1)
+    if isinstance(count, (list, tuple)) and len(count) == 2:
+        return max(1, int(count[0])), max(1, int(count[1]))
+    exact = max(1, int(count or 1))
+    return exact, exact
+
+
+def _count_words(low: int, high: int) -> str:
+    return "%d" % low if low == high else "%d–%d" % (low, high)
+
+
 def _coerce(field: dict, value):
     kind = field["type"]
     if kind == "bool":
@@ -194,17 +208,20 @@ def _coerce(field: dict, value):
             raise SettingsError("%s 只能是 %s" % (field["label"], " / ".join(options)))
         return value
     if kind == "ints":
+        # count 可以是一个数（必须正好这么多），也可以是一对数（1–4 这种范围）：
+        # 旧段那层现在默认只启用一档，写死"必须 4 个"会把整页保存拒掉。
+        low, high = _count_range(field)
         if not isinstance(value, (list, tuple)):
-            raise SettingsError("%s 要给 %d 个数" % (field["label"], field["count"]))
+            raise SettingsError("%s 要给 %s 个数" % (field["label"], _count_words(low, high)))
         numbers = []
-        for item in list(value)[:field["count"]]:
+        for item in list(value)[:high]:
             try:
                 number = int(item)
             except (TypeError, ValueError):
                 raise SettingsError("%s 只能是整数" % field["label"]) from None
             numbers.append(number)
-        if len(numbers) != field["count"]:
-            raise SettingsError("%s 要给 %d 个数" % (field["label"], field["count"]))
+        if len(numbers) < low:
+            raise SettingsError("%s 要给 %s 个数" % (field["label"], _count_words(low, high)))
         value = numbers
     elif kind == "int":
         try:

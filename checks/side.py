@@ -311,6 +311,28 @@ def check_web() -> None:
         check('id="mirror"' in page, "页面里该有量行数的镜像墙")
         check('id="tab-msg"' in page and 'id="inboxview"' in page,
               "页面里该有「消息」那一页（外部来信的仪表盘）")
+        check('id="alert"' in page, "顶栏下面该留一条放提示的位置")
+
+        # 落地侧那条提示（NapCat 登不上之类）：写进数据目录就出现在 /state 里，
+        # 点掉就是把它删掉——提示不该变成第二条真相。
+        alert_path = os.path.join(workdir, "alerts.json")
+        with open(alert_path, "w", encoding="utf-8") as handle:
+            json.dump({"kind": "qq_login_failed", "ts": "2026-10-29 16:00:00",
+                       "text": "QQ 登不上：连着 10 次登录失败，已停下。"}, handle)
+        _, state = get("/state")
+        check((state.get("alert") or {}).get("text", "").startswith("QQ 登不上"),
+              "状态里该带出落地侧的提示：%r" % state.get("alert"))
+        status, _ = post("/alerts/clear", {})
+        check(status == 200, "点掉提示该成功")
+        _, state = get("/state")
+        check(state.get("alert") is None, "点掉之后状态里就没有了：%r" % state.get("alert"))
+
+        # 「归档」按钮：网页面只排队，真正的活留给循环（图只有一个写者）
+        status, body = post("/archive", {})
+        check(status == 200 and body.get("queued"), "点归档要排上：%r" % body)
+        check(control.archive_requested(), "开关要置上")
+        control.clear_archive()
+        check(not control.archive_requested(), "清掉之后就不该还排着")
 
         _, feed = get("/feed?since=0:0")
         check(any("在吗" in item["text"] for item in feed["entries"]),
@@ -386,10 +408,10 @@ def check_web() -> None:
         if os.path.isdir("/proc/self/fd"):
             def fds() -> int:
                 return len(os.listdir("/proc/self/fd"))
-            base = fds()
+            before_fds = fds()            # 别叫 base：那是上面那个 URL 前缀，撞了会 TypeError
             for _ in range(30):
                 get("/state")
-            grown = fds() - base
+            grown = fds() - before_fds
             check(grown <= 5, "每条连接用完要关掉库连接，文件描述符不该越用越多"
                               "（30 次请求涨了 %d 个）" % grown)
         store.close()
@@ -1359,6 +1381,15 @@ def check_shell() -> None:
         names = [tool["function"]["name"] for tool in shell.tools(cfg)]
         check(names == ["run"], "打开之后工具面里要有 run：%r" % names)
 
+        # 这台机器的说明：现写一份进工作区，讲清哪能写、怎么装库
+        written = shell.write_doc(cfg)
+        check(os.path.exists(written), "说明要落到工作区里：%s" % written)
+        with io.open(written, encoding="utf-8") as handle:
+            doc = handle.read()
+        check(shell.workspace_of(cfg) in doc, "说明里要写清工作区是哪：%r" % doc[:120])
+        check("Landlock" in doc and "pip install --target" in doc,
+              "说明里要提到沙箱范围与装库办法")
+
         ready = shell.sandbox_ready()
         if not ready:
             refused = shell.call("run", json.dumps({"command": "echo hi"}), cfg)
@@ -1439,6 +1470,14 @@ def check_shell() -> None:
                   "确实没写出去")
             read = shell.call("run", json.dumps({"command": "head -1 /etc/hostname"}), cfg)
             check("退出码 0" in read, "工作区外该能读：%r" % read)
+            # 工作区里的删改不必绕弯：删文件、删目录、改名都该是普通的成功
+            removed = shell.call("run", json.dumps(
+                {"command": "mkdir -p 待删 && echo x > 待删/a.txt && rm -r 待删 "
+                            "&& echo 删掉了"}), cfg)
+            check("删掉了" in removed, "工作区里该能删：%r" % removed)
+            devnull = shell.call("run", json.dumps(
+                {"command": "echo hi > /dev/null 2>&1 && echo 空设备可用"}), cfg)
+            check("空设备可用" in devnull, "`> /dev/null` 该能用：%r" % devnull)
 
         # 接到循环上：工具面里有它，分派也认它。
         loop_cfg = _loop_config(name="自检", data_dir=workdir,
@@ -1461,3 +1500,42 @@ def check_shell() -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def check_cli() -> None:
+    """循环只有步：入口不许再给步数上限。停是她自己的动作（`wait`）。"""
+    from rin import cli
+
+    parser = cli.build_parser()
+    defaults = {action.dest: action.default for action in parser._actions}
+    check(defaults.get("max_steps") == 0,
+          "--max-steps 默认必须是 0（不设上限）：%r" % defaults.get("max_steps"))
+
+    args = parser.parse_args(["--name", "自检"])
+    check(args.max_steps == 0, "不传就是 0：%r" % args.max_steps)
+    capped = parser.parse_args(["--name", "自检", "--max-steps", "3"])
+    check(capped.max_steps == 3, "显式给了数才收尾（自检/短场用）：%r"
+          % capped.max_steps)
+
+
+def check_guard() -> None:
+    """NapCat 守护的判据：只数最后一次登录成功之后的 Login Error。"""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "deploy", "napcat-guard.py")
+    check(os.path.exists(path), "守护脚本要在 deploy 里：%s" % path)
+    spec = importlib.util.spec_from_file_location("napcat_guard", path)
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+
+    log = "\n".join([
+        "13:00:00 [error] [Core] [Login] Login Error,ErrType: 1 ErrCode: 3",
+        "13:02:00 [info] [OneBot] [HTTP Server Adapter] Start On 127.0.0.1:3000",
+        "13:04:00 [error] [Core] [Login] Login Error,ErrType: 1 ErrCode: 3",
+        "13:06:00 [error] [Core] [Login] Login Error,ErrType: 1 ErrCode: 3",
+    ])
+    check(guard.login_errors_since_success(log) == 2,
+          "成功之前的账不算：%r" % guard.login_errors_since_success(log))
+    check(guard.login_errors_since_success("") == 0, "没有日志就是 0")
+    check(guard.login_errors_since_success(
+        "13:00:00 [Login] Login Error\n13:01:00 [Login] Login Error") == 2,
+        "没成功过就全算")

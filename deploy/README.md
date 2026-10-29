@@ -18,6 +18,33 @@ systemd 用 `PYTHONPATH` 把两个目录都指上，改代码只要重传再重�
 `app`（跟这两个仓无关的遗留目录）；`/opt/rin/data` 同样不能被同步冲掉——所以两边的
 `rsync --delete` 都要带 `--exclude data`。
 
+⚠️ `/opt/palimpsest/data` 是单仓时代的旧数据目录，服务现在不用它（`WorkingDirectory=/opt/rin`）。
+它对服务用户**可读、可 `cd`、不可写**——她（模型）进去一次就会撞一次 `Permission denied`，
+而报错长得跟文件权限一样。2026-10-29 那天她四次"删不掉/移不动"里有三次是踩在这里。
+**已归档：`/opt/archive/palimpsest-data-20261029`**（15 MB，原样保留，不在任何 rsync 的路径里）；
+`/opt/palimpsest/data` 已经不存在了，她 `cd` 过去会直接报"没有这个目录"。
+
+## 她在这台机器上的边界
+
+`run` 跑在宿主上，身份是服务用户 `palimpsest`，外面套一层 Landlock：
+
+| 项 | 值 |
+|---|---|
+| 能写的地方 | 只有 `<data>/workspace`（建/删/改名/截断都行）；别处能读、能执行、能 `cd` |
+| 别处写会怎样 | `EACCES`（`Permission denied`）——是沙箱范围，不是文件权限，`chmod` 改不动 |
+| 空设备 | `/dev/null`、`/dev/zero`、`/dev/full` 可写（2026-10-29 之前是拒的） |
+| 凭证 | `/etc/palimpsest`、`credentials.yaml`、`*.pem`、`.ssh` 在工具层就拒 |
+| 单条命令 | 20 秒超时（连进程组一起杀）、输出留头尾共 4000 字 |
+| 单文件 | 64 MB（`RLIMIT_FSIZE`） |
+| 临时目录 | `TMPDIR` 指到工作区的 `.tmp` |
+
+启动时会在工作区写一份《这台机器.md》，把这些和她"怎么装库"写在一起；`run` 的说明里
+指向那份文件。**改了上面任何一项，记得同步 `rin/tools/shell.py` 的 `doc_text()`。**
+
+装库：`python3 -m pip install --target .libs 名字 -i https://mirrors.cloud.tencent.com/pypi/simple`，
+用的时候 `PYTHONPATH=.libs python3 …`。默认 PyPI 从这台机器拉包要几分钟，腾讯云镜像几秒。
+服务自己的 venv 是 root 的，`sudo` 才装得进去。
+
 ## 机器上要装的东西
 
 | 东西 | 干什么 | 怎么装 |
@@ -101,6 +128,47 @@ QQ 账号会被腾讯踢下线（日志里是 `[KickedOffLine] 你的账号当�
 她那边不用重启：进件表是同一个，扫码上线之后到的消息照常叫醒她。
 她在掉线期间"说"过的话（`meta.via` 指向 QQ）不会补发——发不出去就是发不出去，
 重连之后不会把旧话翻出来重发（对齐游标时一条历史都不发）。
+
+#### 被冻结 / 风控（"每次扫码都说新设备"）
+
+腾讯对"挂在云服务器上的个人号"本来就不友好。2026-10-29 实测：账号被冻结解冻之后，
+NapCat 每两分钟自动重试一次登录，连试 35 分钟：
+
+```
+10-29 13:46:10 [error] [Core] [Login] Login Error,ErrType: 1 ErrCode: 3
+...
+10-29 14:21:31 [error] [Core] [Login] Login Error,ErrType: 1 ErrCode: 1
+```
+
+这种自动重试在风控眼里就是"反复敲门"，所以有个守护（`napcat-guard.service`）：
+
+- 判据：OneBot 的 `127.0.0.1:3000` 在听 = 登录好了；否则数 `docker logs` 里
+  **最后一次登录成功之后**的 `Login Error` 行数。
+- 连着 10 次（约 20 分钟）就 `docker stop napcat`，并往 `<data>/alerts.json` 写一条；
+  网页顶栏会挂出来，点「知道了」就删掉。
+- 你 `docker start napcat` 扫码上线后，守护看到端口在听就把那条提示删掉。
+
+装它：
+
+    sudo install -m 755 deploy/napcat-guard.py /opt/napcat/guard.py
+    sudo install -m 644 deploy/napcat-guard.service /etc/systemd/system/
+    sudo systemctl daemon-reload && sudo systemctl enable --now napcat-guard
+
+设备指纹那条：镜像**钉死 digest**，不要 `compose pull`。换镜像 = 换 QQ 客户端版本
+（连镜像里的 `/etc/machine-id` 一起换），腾讯那边就认成一台新设备，扫码要多一次
+"新设备"授权。宿主机名、`/app/.config/QQ` 都已经是固定的，不用动。
+
+社区里同类问题的结论（都指向"云 + 新设备 + 异地"这个组合）：
+
+- NapCat 维护者（[issue #859](https://github.com/NapNeko/NapCatQQ/issues/859)）：
+  「换 IP 换账号，或者保持扫码设备与 Docker 接入互联网 IP 一致」；
+  [issue #931](https://github.com/NapNeko/NapCatQQ/issues/931) 里补一句
+  「napcat 无法控制与 device 相关变量以载入 session」——所以"搬 `.config/QQ` 免扫码"
+  不一定成。
+- 有人（issue #931 评论）换掉公网 IP 之后就登进去了：同一个 IP 被风控过。
+- 更早的 go-cqhttp 时代（[老唐笔记](https://oldtang.com/11071.html)）：本地登录成功后
+  把 `device` / `session.token` 搬到服务器；或者关掉账号安全里的"登录保护 /
+  登录安全检查"（粗暴，慎用）。
 
 ## 从单仓切过来（第一次）
 

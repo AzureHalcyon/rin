@@ -56,6 +56,10 @@ WRITE_RIGHTS = (WRITE_FILE | REMOVE_DIR | REMOVE_FILE | MAKE_CHAR | MAKE_DIR
                 | MAKE_REG | MAKE_SOCK | MAKE_FIFO | MAKE_BLOCK | MAKE_SYM
                 | REFER | TRUNCATE)
 
+# 工作区之外还要能写的：几个空设备。`命令 > /dev/null 2>&1` 太常见了，
+# 不给它开，等于"什么都能干，就是不能把输出丢掉"——而报错还长得像文件权限问题。
+DEVICE_WRITABLE = ("/dev/null", "/dev/zero", "/dev/full")
+
 
 class LandlockError(RuntimeError):
     """内核不支持，或者规则没装上。"""
@@ -86,6 +90,20 @@ def abi_version() -> int:
     return int(value) if int(value) > 0 else 0
 
 
+def _add_rule(libc, ruleset: int, path: str, rights: int) -> None:
+    """给一条路径（目录或设备文件）开 rights。"""
+    fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+    try:
+        rule = _PathBeneathAttr(allowed_access=rights, parent_fd=fd)
+        if libc.syscall(SYS_ADD_RULE, ctypes.c_int(ruleset),
+                        ctypes.c_int(RULE_PATH_BENEATH),
+                        ctypes.byref(rule), ctypes.c_uint32(0)) < 0:
+            raise LandlockError("landlock_add_rule 失败：%s"
+                                % os.strerror(ctypes.get_errno()))
+    finally:
+        os.close(fd)
+
+
 def confine(workspace: str, rights: int = WRITE_RIGHTS) -> None:
     """给当前进程装上 Landlock 规则：只允许在 workspace 下做 rights 那些事。"""
     version = abi_version()
@@ -108,16 +126,14 @@ def confine(workspace: str, rights: int = WRITE_RIGHTS) -> None:
     try:
         folder = os.path.abspath(workspace)
         os.makedirs(folder, exist_ok=True)
-        fd = os.open(folder, os.O_PATH | os.O_CLOEXEC)
-        try:
-            path = _PathBeneathAttr(allowed_access=rights, parent_fd=fd)
-            if libc.syscall(SYS_ADD_RULE, ctypes.c_int(ruleset),
-                            ctypes.c_int(RULE_PATH_BENEATH),
-                            ctypes.byref(path), ctypes.c_uint32(0)) < 0:
-                raise LandlockError("landlock_add_rule 失败：%s"
-                                    % os.strerror(ctypes.get_errno()))
-        finally:
-            os.close(fd)
+        _add_rule(libc, ruleset, folder, rights)
+        # 空设备只开"写文件"这一位：够 `> /dev/null` 用，也不会让它们变成可改的目录
+        for device in DEVICE_WRITABLE:
+            if os.path.exists(device):
+                try:
+                    _add_rule(libc, ruleset, device, WRITE_FILE)
+                except OSError:
+                    pass                  # 设备不在或者打不开：只影响那一条重定向
         if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
             raise LandlockError("prctl(NO_NEW_PRIVS) 失败")
         if libc.syscall(SYS_RESTRICT_SELF, ctypes.c_int(ruleset),

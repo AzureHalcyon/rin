@@ -6,7 +6,11 @@
 # 起来后 WebUI 在 http://127.0.0.1:6099/webui?token=<WEBUI_TOKEN>（走 SSH 隧道看）。
 services:
   napcat:
-    image: mlikiowa/napcat-docker:latest
+    # ★ 钉死 digest，不用 latest：换镜像等于换 QQ 客户端版本（连镜像里的
+    #   /etc/machine-id 一起换），腾讯那边就认成一台新设备 —— 扫码要多一次
+    #   "新设备"授权，风控也更容易上门。要升级就显式改这一行，别 `compose pull`。
+    #   2026-10-29 钉的是 2026-10-21 构建的那个（NapCat 4.18.x）。
+    image: mlikiowa/napcat-docker@sha256:b101b8968cc31ae428ec0f8e117386e4ced7773b2d8226ed9f7ddfcec55f1b7e
     container_name: napcat
     restart: unless-stopped
     # host 网络：容器里的 127.0.0.1 才是这台机器的 127.0.0.1，

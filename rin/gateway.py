@@ -6,6 +6,7 @@
     GET  /graph                           → 事件图（一页 HTML，数据内嵌）
     POST /edits                           → 把页面攒的编辑清单存到 <data>/edits/
     GET  /state                           → 它现在在干什么、今天用了多少
+    POST /alerts/clear                    → 把顶上那条提示点掉（删掉那个文件）
     GET  /                                → 单页界面
 
 ★ 这一层**只读库、只往 inbox 写**，从不碰 blocks/entries/bands 的写路径：
@@ -187,6 +188,10 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._persona()
             if route.path == "/restart":
                 return self._restart()
+            if route.path == "/archive":
+                return self._archive()
+            if route.path == "/alerts/clear":
+                return self._clear_alert()
         except Exception as exc:
             return self._send(500, {"error": "内部出错：%s" % exc})
         return self._send(404, {"error": "没有这个地址"})
@@ -678,7 +683,48 @@ class _Handler(BaseHTTPRequestHandler):
                 "block_tokens": int(getattr(config, "block_tokens", 0)),
                 "context_budget": int(getattr(config, "context_budget", 0)),
                 "today": store.usage_today(),
-                "totals": totals}
+                "totals": totals,
+                "alert": self._alert()}
+
+    def _archive(self) -> None:
+        """点「提前清」：只置一个开关，真正的活留给循环。
+
+        为什么不在这个线程里跑：记忆图是整份 JSON 覆写，只有一个写者（那个循环）。
+        循环会在"没有新输入"的那一步看到开关，跑完把一行结论写进日志与状态。
+        """
+        control.request_archive()
+        return self._send(200, {"queued": True})
+
+    def _alert(self):
+        """落地侧（NapCat 守护）写进数据目录的一条提示：网页顶上挂一条，点掉就删文件。
+        为什么走文件而不是库：写它的是 root 下的守护进程（要调 docker），库是单写者
+        （那个循环进程）。一条一次性的运维提示没必要挤进记录那条路。
+        """
+        path = os.path.join(str(getattr(self.server.config, "data_dir", "") or ""),
+                            "alerts.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return None
+        return {"text": text, "ts": str(data.get("ts") or ""),
+                "kind": str(data.get("kind") or "")}
+
+    def _clear_alert(self) -> None:
+        path = os.path.join(str(getattr(self.server.config, "data_dir", "") or ""),
+                            "alerts.json")
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            return self._send(500, {"error": "删不掉那条提示：%s" % exc})
+        return self._send(200, {"ok": True})
 
     def _compressions(self) -> int:
         return sum(1 for block in _store_of(self.server).blocks()

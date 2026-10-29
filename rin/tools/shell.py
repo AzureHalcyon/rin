@@ -66,6 +66,91 @@ def sandbox_ready() -> bool:
         return False
 
 
+# ── 这台机器的说明：现写一份进工作区，她自己查 ─────────────────────────────
+DOC_NAME = "这台机器.md"
+MIRROR = "https://mirrors.cloud.tencent.com/pypi/simple"
+
+
+def doc_path(config) -> str:
+    return os.path.join(workspace_of(config), DOC_NAME)
+
+
+def _version_of(module: str) -> str:
+    """装没装、什么版本——问的就是服务这个解释器，不是猜。"""
+    try:
+        imported = __import__(module)
+    except Exception:
+        return ""
+    return str(getattr(imported, "__version__", "") or "有")
+
+
+def doc_text(config) -> str:
+    workspace = os.path.abspath(workspace_of(config))
+    timeout = float(getattr(config, "run_timeout", 20.0) or 20.0)
+    file_mb = int(getattr(config, "run_file_mb", 64) or 64)
+    limit = int(getattr(config, "run_output_chars", 4000) or 4000)
+    pillow = _version_of("PIL")
+    pillow_line = ("- 已经装好的库：Pillow %s（`import PIL`）。" % pillow if pillow
+                   else "- 这个解释器里还没有 Pillow。")
+    try:
+        existing = sorted(name for name in os.listdir(workspace)
+                          if not name.startswith(".") and name != DOC_NAME)
+    except OSError:
+        existing = []
+    lines = [
+        "# 这台机器",
+        "",
+        "每次启动现写一遍，别往这里写东西。",
+        "",
+        "## 能写的地方",
+        "",
+        "- 工作区：`%s`。它就是 `run` 的当前目录，也是 `write` 的根。" % workspace,
+        "- 别处：能读、能执行、能 `cd`；写、删、改名一律 `Permission denied`。",
+        "  那是内核沙箱（Landlock）划的范围，不是文件权限，`chmod` 也改不动。",
+        "- `/dev/null`、`/dev/zero`、`/dev/full` 可以写：`命令 > /dev/null 2>&1` 照常用。",
+        "- 临时目录指在工作区的 `.tmp`；单个文件上限 %d MB。" % file_mb,
+        "",
+        "## 跑命令",
+        "",
+        "- `run` 走 `sh -c`：一次最多 %g 秒（超了连子进程一起杀），输出只留头尾共 %d 字。"
+        % (timeout, limit),
+        "- `python3` 是系统那个（%s）；服务自己用的是 `%s`。"
+        % (_version_of_python(), sys.executable),
+        "- 装库装到工作区：`python3 -m pip install --target .libs 名字 -i %s`，" % MIRROR,
+        "  用的时候 `PYTHONPATH=.libs python3 …`。默认 PyPI 从这台机器拉包要几分钟，",
+        "  腾讯云镜像几秒；也别用 `--user`，系统会以 PEP 668 拒绝。",
+        pillow_line,
+        "",
+        "## 机器与网络",
+        "",
+        "- Ubuntu 24.04 的云服务器，网络通，`curl` / `git` / `pip` 都在。",
+        "- 不给读的：`/etc/palimpsest`、`credentials.yaml`、`*.pem`、`.ssh` 这类。",
+        "- 这台机器上还在跑的：`palimpsest`（你自己）、`qq`（NapCat 适配器）、",
+        "  `napcat` 容器（QQ 协议端，端口 3000）。",
+        "",
+        "## 工作区里现成的东西",
+        "",
+    ]
+    lines.append("、".join(existing) if existing else "（空）")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _version_of_python() -> str:
+    import platform
+
+    return platform.python_version()
+
+
+def write_doc(config) -> str:
+    """把说明写到工作区；写不进去就抛 OSError，让入口报一句。"""
+    path = doc_path(config)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(doc_text(config))
+    return path
+
+
 def tools(config=None) -> List[dict]:
     """没开就给空表：工具面里连 `run` 都不出现。"""
     if not bool(getattr(config, "run_enabled", False)):

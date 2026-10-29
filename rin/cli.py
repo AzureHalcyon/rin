@@ -1,8 +1,8 @@
 """命令行入口：把循环跑起来。
 
-    python -m loop --name 林晚 --max-steps 20
+    python -m rin --name 林晚
 
-步骤 0 只有想、说、挂起；记忆与真摘要还没接上（见 docs/持续在场-API实现.md 第 7 节）。
+循环只由工具调用推进，停是她自己的动作（`wait`）；`--max-steps` 默认 0，不设上限。
 """
 
 from __future__ import annotations
@@ -47,7 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="deepseek-flash")
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--max-tokens", type=int, default=4000)
-    parser.add_argument("--max-steps", type=int, default=20, help="0 表示不设上限")
+    parser.add_argument("--max-steps", type=int, default=0,
+                        help="0 表示不设上限（默认：循环只有步，停是她自己的动作）")
     parser.add_argument("--block-tokens", type=int, default=50000,
                         help="当前块攒到多少 token 就压（调试时调小）")
     parser.add_argument("--summary-model", default="deepseek-flash",
@@ -251,6 +252,13 @@ def main(argv=None) -> int:
               % (len(paths), qq_tool.doc_path(config)), flush=True)
     except OSError as exc:
         print("[QQ] 动作清单写不进去：%s" % exc, flush=True)
+
+    # 这台机器的说明现写一份进工作区：哪能写、怎么装库、超时多少，都在里面
+    try:
+        from rin.tools import shell as shell_tool
+        print("[机器] 说明写好了：%s" % shell_tool.write_doc(config), flush=True)
+    except OSError as exc:
+        print("[机器] 说明写不进去：%s" % exc, flush=True)
 
     # 设置页存的工具凭据（B 站那三个键）在这里生效
     try:
