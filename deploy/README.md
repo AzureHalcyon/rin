@@ -33,7 +33,9 @@ systemd 用 `PYTHONPATH` 把两个目录都指上，改代码只要重传再重�
 | 能写的地方 | 只有 `<data>/workspace`（建/删/改名/截断都行）；别处能读、能执行、能 `cd` |
 | 别处写会怎样 | `EACCES`（`Permission denied`）——是沙箱范围，不是文件权限，`chmod` 改不动 |
 | 空设备 | `/dev/null`、`/dev/zero`、`/dev/full` 可写（早期版本写不进去） |
-| 凭证 | `/etc/palimpsest`、`credentials.yaml`、`*.pem`、`.ssh` 在工具层就拒 |
+| 凭证 | `/etc/palimpsest`、`credentials.yaml`、`*.pem`、`.ssh` 在工具层就拒；认 glob、软链接、去掉引号的说法，碰上会在网页顶上留一条 |
+| 子进程环境 | 变量名里带 key / token / secret / password 的一概不传（`env` 念不出通道令牌） |
+| 出站 | QQ 发消息一分钟 20 条、一天 400 条（`rin/limit.py`）：超了这条不发，并留一条提示 |
 | 单条命令 | 20 秒超时（连进程组一起杀）、输出留头尾共 4000 字 |
 | 单文件 | 64 MB（`RLIMIT_FSIZE`） |
 | 临时目录 | `TMPDIR` 指到工作区的 `.tmp` |

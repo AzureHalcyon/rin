@@ -15,6 +15,8 @@ qq(action="send_private_msg", params={"user_id": 10000, "message": "在"})
 带 ⚠ 的会改别人/群里的东西，或者发出去收不回来。返回是 NapCat 的原样 JSON
 （`status` / `retcode` / `data`）。
 
+发消息的动作有频率上限：连着往外倒会被拦，拦住的那一条不发。
+
 ## action
 动作名（如 `send_private_msg`、`set_friend_remark`），或者 `index` / `help`。
 

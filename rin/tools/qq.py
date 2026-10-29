@@ -22,6 +22,7 @@ import urllib.request
 from typing import List
 
 from loop import prompt_files
+from rin import alerts, limit
 from rin.tools import qq_actions, workspace
 
 NAMES = ("qq",)
@@ -140,6 +141,13 @@ def call(name: str, arguments: str, config=None) -> str:
         return "这个动作不给：%s（%s）。" % (action, qq_actions.BLOCKED[action])
     if not qq_actions.known(action):
         return "清单里没有这个动作：%s。用 index 看组，help 看一组。" % action
+    # 发消息那几个过一道闸：被牵着刷屏是收不回来的那种坏（见 rin/limit.py）
+    if action.startswith("send"):
+        allowed, why = limit.allow(config)
+        if not allowed:
+            alerts.raise_alert(config, "qq_send_blocked",
+                               "QQ 发消息被闸住了：%s" % why)
+            return "这条没发：%s" % why
     try:
         reply = _post(action, params, config)
     except urllib.error.HTTPError as exc:

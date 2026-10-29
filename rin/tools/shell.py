@@ -7,13 +7,16 @@
   绝不"没沙箱也照跑"。
 ★ 命令走 `sh -c`（管道、重定向都能用），因为有沙箱兜底了。
 ★ 唯一剩下的一条规则：参数里点到凭证/密钥就不跑（读出来会进记录）。它不是沙箱，
-  挡的是"别把密钥念进对话"。
+  挡的是"别把密钥念进对话"；所以它认 glob、软链接和去掉引号后的样子，而不是只认
+  字面。子进程的环境变量里也去掉 key / token / secret 这类名字（`env` 一把就能念出来）。
 """
 
 from __future__ import annotations
 
+import glob
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -21,34 +24,103 @@ import time
 from typing import List
 
 from loop import prompt_files
+from rin import alerts
 
 NAMES = ("run",)
 
 # 敏感文件：命令照跑，但命令里点到它就不跑。它不是沙箱——源码、数据、日志随便读，
 # 只有凭证/密钥这一类不许进记录（读出来会变成"她说过密钥"，还可能被写成笔记）。
+# 既然它不是沙箱，就别只认字面：`/etc/palimp*/cred*`、`$(echo /etc/palimpsest)`、
+# 软链接过去这些都要算进来（见 `_sensitive`），碰上了留一条提示给人看。
 SENSITIVE_DIRS = ("/etc/palimpsest", "/etc/shadow", "/etc/sudoers", "/root/")
 SENSITIVE_NAMES = ("credentials.yaml", "credentials.yml", "web-token",
                    "id_rsa", "id_ed25519", "id_ecdsa", "authorized_keys")
 SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
+# 子进程的环境里不带这一类名字的变量：`env` 一把就能把令牌念出来。
+_SECRET_ENV = re.compile(r"(?i)(key|token|secret|passw?d|credential)")
+_SHELL_NOISE = re.compile(r"[()$`{}\[\];|&<>\"']")
+
+
+def _is_secret(path: str) -> bool:
+    """这个路径是不是凭证/密钥那类。"""
+    lowered = str(path or "").strip().lower()
+    if not lowered:
+        return False
+    for folder in SENSITIVE_DIRS:
+        if lowered.startswith(folder):
+            return True
+    name = os.path.basename(lowered)
+    if name in SENSITIVE_NAMES:
+        return True
+    if lowered.endswith(SENSITIVE_SUFFIXES):
+        return True
+    if "/.ssh/" in lowered or lowered.startswith("~/.ssh"):
+        return True
+    if "/proc/" in lowered and lowered.rstrip("/").endswith("/environ"):
+        return True
+    return False
+
+
+def _shapes(text: str) -> List[str]:
+    """一个词可能指向哪些真实路径：原样、去掉 shell 装饰的、glob 展开的每一个。"""
+    plain = _SHELL_NOISE.sub("", str(text or "")).strip()
+    shapes = [str(text or "").strip(), plain]
+    try:
+        shapes.extend(glob.glob(os.path.expanduser(plain))[:50])
+    except (OSError, re.error):
+        pass
+    try:
+        shapes.append(os.path.realpath(os.path.expanduser(plain)))
+    except OSError:
+        pass
+    return [item for item in shapes if item]
+
+
+def _word_hits(word: str) -> str:
+    for shape in _shapes(word):
+        if _is_secret(shape):
+            return word.strip().strip("\"'")
+    return ""
 
 
 def _sensitive(token: str) -> str:
-    """这个参数像不像敏感文件；像就返回它，不像返回空。"""
-    text = str(token or "").strip().strip("\"'")
-    if not text:
-        return ""
-    lowered = text.lower()
+    """命令里有没有点到敏感文件；有就返回那个词，没有返回空。
+
+    先整条扫一遍字面（`cat /etc/palimpsest/credentials.yaml` 这类最直白的），
+    再把每个词按 glob / 软链接 / 去掉引号后的样子展开一遍。
+    """
+    body = str(token or "")
+    lowered = body.lower()
     for folder in SENSITIVE_DIRS:
         if folder in lowered:
-            return text
-    name = os.path.basename(lowered)
-    if name in SENSITIVE_NAMES:
-        return text
-    if lowered.endswith(SENSITIVE_SUFFIXES):
-        return text
-    if "/.ssh/" in lowered or lowered.startswith("~/.ssh"):
-        return text
+            return folder
+    for name in SENSITIVE_NAMES:
+        if name in lowered:
+            return name
+    for suffix in SENSITIVE_SUFFIXES:
+        if suffix in lowered:
+            return suffix
+    if "/.ssh/" in lowered:
+        return "/.ssh/"
+    for word in body.replace("\n", " ").split():
+        hit = _word_hits(word)
+        if hit:
+            return hit
     return ""
+
+
+def _child_env() -> dict:
+    """给子进程的环境：把带 key / token / secret / password 的字眼去掉。
+
+    她不缺这几个变量；而 `env` 或 `/proc/self/environ` 一把就能把通道令牌念进记录，
+    再顺手发出去。凭证文件本身有权限挡着，环境变量没有。
+    """
+    env = {}
+    for name, value in os.environ.items():
+        if _SECRET_ENV.search(str(name)):
+            continue
+        env[name] = value
+    return env
 
 
 def workspace_of(config) -> str:
@@ -125,7 +197,8 @@ def doc_text(config) -> str:
         "## 机器与网络",
         "",
         "- Ubuntu 24.04 的云服务器，网络通，`curl` / `git` / `pip` 都在。",
-        "- 不给读的：`/etc/palimpsest`、`credentials.yaml`、`*.pem`、`.ssh` 这类。",
+        "- 不给读的：`/etc/palimpsest`、`credentials.yaml`、`*.pem`、`.ssh` 这类；",
+        "  命令看到的环境里也没有令牌那类变量（`env` 里不会出现 `NAPCAT_TOKEN`）。",
         "- 这台机器上还在跑的：`palimpsest`（你自己）、`qq`（NapCat 适配器）、",
         "  `napcat` 容器（QQ 协议端，端口 3000）。",
         "",
@@ -200,6 +273,8 @@ def _shell_argv(command: str) -> List[str]:
 def execute(command: str, config) -> str:
     hit = _sensitive(command)
     if hit:
+        alerts.raise_alert(config, "credential_probe",
+                           "`run` 里点到了 %s 这类凭证，已经拦下。" % hit)
         return ("不给读：命令里点到了 %s 这类凭证或密钥，那类东西不进记录。"
                 "源码、数据、日志随便看。" % hit)
 
@@ -239,7 +314,8 @@ def execute(command: str, config) -> str:
         proc = subprocess.Popen(  # noqa: S603 - 边界在内核（Landlock），不在这里
             argv, cwd=workdir, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", start_new_session=True)
+            text=True, encoding="utf-8", errors="replace", start_new_session=True,
+            env=_child_env())
     except OSError as exc:
         return "起不来：%s" % exc
 

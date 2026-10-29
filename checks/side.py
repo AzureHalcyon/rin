@@ -27,7 +27,7 @@ from loop import control, prompt_files
 from loop.store import LoopStore
 from memory_v2.api import Memory
 
-from rin import app, settings, tool_texts
+from rin import app, alerts, limit, settings, tool_texts
 from rin import gateway as web
 from rin.cli import _clean_line
 from rin.memory_bridge import OFF_TEXT, MemoryBridge
@@ -1514,6 +1514,97 @@ def check_cli() -> None:
     capped = parser.parse_args(["--name", "自检", "--max-steps", "3"])
     check(capped.max_steps == 3, "显式给了数才收尾（自检/短场用）：%r"
           % capped.max_steps)
+
+
+def check_outbound() -> None:
+    """出站闸门：发消息过一道闸，超了不发，并在网页顶上留一条提示。
+
+    被牵着刷屏是收不回来的那种坏（账号被风控、群里被踢），所以这里卡的是"连着往外
+    倒"这件事本身，不是内容。
+    """
+    from rin.tools import qq as qq_tool
+
+    workdir = tempdir("out-")
+    try:
+        cfg = _loop_config(name="自检", data_dir=workdir)
+        stamp = time.mktime(time.strptime("2026-10-29 12:00", "%Y-%m-%d %H:%M"))
+        for index in range(limit.PER_MINUTE):
+            allowed, why = limit.allow(cfg, moment=stamp + index)
+            check(allowed, "第 %d 条该放行：%r" % (index + 1, why))
+        allowed, why = limit.allow(cfg, moment=stamp + limit.PER_MINUTE)
+        check(not allowed and "一分钟" in why, "撞上一分钟的闸该拒：%r" % why)
+        allowed, _ = limit.allow(cfg, moment=stamp + limit.PER_MINUTE + 61)
+        check(allowed, "过了这一分钟该能再发（窗口只数最近 60 秒）")
+        used = limit.used(cfg, moment=stamp + limit.PER_MINUTE + 61)
+        check(used["count"] == limit.PER_MINUTE + 1, "今天的计数要累着：%r" % used)
+        tomorrow = stamp + 86400
+        allowed, _ = limit.allow(cfg, moment=tomorrow)
+        check(allowed and limit.used(cfg, moment=tomorrow)["count"] == 1,
+              "跨天要清零：%r" % limit.used(cfg, moment=tomorrow))
+
+        # 一天的闸满了：连 NapCat 都不该去调
+        with io.open(limit.path_of(cfg), "w", encoding="utf-8") as handle:
+            json.dump({"day": time.strftime("%Y-%m-%d"), "count": limit.PER_DAY,
+                       "recent": []}, handle)
+        refused = qq_tool.call(
+            "qq", json.dumps({"action": "send_private_msg",
+                              "params": {"user_id": 10000, "message": "在"}}), cfg)
+        check("这条没发" in refused and "今天" in refused,
+              "一天的发满了就该拒：%r" % refused)
+        check(os.path.isfile(alerts.path_of(cfg)), "闸住之后网页顶上要有一条提示")
+        with io.open(alerts.path_of(cfg), encoding="utf-8") as handle:
+            data = json.load(handle)
+        check(data.get("kind") == "qq_send_blocked", "提示要带 kind：%r" % data)
+        check(not alerts.raise_alert(cfg, "qq_send_blocked", "又来一条"),
+              "同一种事半小时内只挂一次")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def check_injection_guard() -> None:
+    """凭证闸认 glob、软链接和拼出来的路径；子进程的环境里不带令牌。"""
+    workdir = tempdir("cred-")
+    try:
+        cfg = _loop_config(name="自检", data_dir=workdir)
+        folder = os.path.join(workdir, "etc")
+        os.makedirs(folder)
+        secret = os.path.join(folder, "credentials.yaml")
+        with io.open(secret, "w", encoding="utf-8") as handle:
+            handle.write("chat_key: sk-test\n")
+        plain = os.path.join(workdir, "notes.txt")
+        with io.open(plain, "w", encoding="utf-8") as handle:
+            handle.write("hi\n")
+
+        check(shell._sensitive("cat %s" % secret),
+              "点到凭证文件的名字就该认出来")
+        check(shell._sensitive("cat %s" % os.path.join(folder, "cred*")),
+              "glob 展开之后是凭证，也要认出来")
+        check(shell._sensitive("cat %s" % os.path.join(workdir, "etc", "..",
+                                                       "etc", "credentials.yaml")),
+              "拼出来的路径（`..`）也要认出来")
+        check(not shell._sensitive("cat %s" % plain),
+              "普通文件不许误伤：%r" % shell._sensitive("cat %s" % plain))
+        if os.name != "nt":
+            check(shell._sensitive("cat /etc/palimp*/cred*"),
+                  "Linux 上 `/etc/palimp*/cred*` 这种也要认出来")
+
+        out = shell.execute("cat %s" % secret, cfg)
+        check("不给读" in out, "拦下的时候要说清楚：%r" % out)
+        check(os.path.isfile(alerts.path_of(cfg)),
+              "有人让 `run` 去碰凭证，网页顶上要留一条")
+
+        os.environ["LOOP_CHAT_KEY"] = "sk-should-not-pass"
+        os.environ["NAPCAT_TOKEN"] = "token-should-not-pass"
+        try:
+            env = shell._child_env()
+        finally:
+            os.environ.pop("LOOP_CHAT_KEY", None)
+            os.environ.pop("NAPCAT_TOKEN", None)
+        check("LOOP_CHAT_KEY" not in env and "NAPCAT_TOKEN" not in env,
+              "子进程的环境里不该带令牌：%r" % sorted(env)[:6])
+        check("PATH" in env, "别的一概留着（PATH 之类的不能少）")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def check_guard() -> None:

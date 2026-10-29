@@ -19,7 +19,7 @@ ORDER = [
     "check_settings",
     "check_memory_tools", "check_page_edits", "check_channel_settings",
     "check_channel", "check_workspace", "check_web_tools", "check_shell",
-    "check_cli", "check_guard",
+    "check_cli", "check_guard", "check_outbound", "check_injection_guard",
 ]
 
 
