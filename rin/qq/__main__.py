@@ -1,6 +1,6 @@
 """入口：python -m rin.qq
 
-把 NapCat 的 OneBot 事件转成 rin 的收件箱进件，再把她的回话发回 QQ。
+把 NapCat 的 OneBot 事件转成 rin 的收件箱进件（只收不发：她要说给 QQ 上的人听，自己调 qq 工具发）。
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="允许的群号，逗号分隔")
     parser.add_argument("--group-mode", default="at", choices=("at", "all"),
                         help="群里只在被 @ 时收（at，默认），还是全收（all）")
-    parser.add_argument("--feed-seconds", type=float, default=1.0,
-                        help="多久拉一次网关的 /feed（秒）")
+    parser.add_argument("--poll-seconds", type=float, default=60.0,
+                        help="多久看一眼账号在不在线（秒）")
     return parser
 
 
@@ -54,7 +54,7 @@ def main(argv=None) -> int:
         napcat=args.napcat, napcat_token=args.napcat_token,
         listen=args.listen,
         allow_users=_list(args.allow_users), allow_groups=_list(args.allow_groups),
-        group_mode=args.group_mode, feed_seconds=args.feed_seconds)
+        group_mode=args.group_mode, poll_seconds=args.poll_seconds)
     serve(config)
     return 0
 

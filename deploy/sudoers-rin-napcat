@@ -1,0 +1,14 @@
+# 网页上「重起 NapCat」那一下：只放行这两条命令，别的都不给。
+#
+# 为什么要它：守护在连着两次登录失败之后会把容器停下（不再反复敲门），
+# 而容器停着就不会有新的二维码——要扫码就得有人把它起起来。
+# 以前这一步只能登服务器敲 docker，现在手机上点一下就行。
+#
+# 为什么是 restart 而不是 start：容器已经在跑的时候 `docker start` 什么都不做，
+# 页面就会一直显示那张过期的码（2026-10-30 就是这么"点了重起还是已过期"的）。
+# NapCat 只在启动那一下生成二维码，所以必须真的重起。
+#
+# 装法：sudo install -o root -g root -m 440 deploy/sudoers-rin-napcat \
+#         /etc/sudoers.d/rin-napcat && sudo visudo -cf /etc/sudoers.d/rin-napcat
+palimpsest ALL=(root) NOPASSWD: /usr/bin/docker start napcat
+palimpsest ALL=(root) NOPASSWD: /usr/bin/docker restart napcat

@@ -1,6 +1,6 @@
-"""X岛（`www.nmbxd1.com`）的只读入口：看板块、看串、看回复。
+"""X岛（`www.nmbxd1.com`）的入口：看板块、看串、看回复，以及发串、回串。
 
-三个动作都是公开读接口，**不要登录、不要饼干**：
+读的三个动作都是公开接口，**不要登录、不要饼干**：
 
     GET /Api/getForumList              板块（分组 → 板块 id）
     GET /Api/showf?id=<板块>&page=<n>  一个板块的串列表
@@ -16,7 +16,8 @@
 - 带图的帖子 `img` 是路径、`ext` 是后缀，拼成 `https://image.nmb.best/image/…`；
   回复里带图的，落地后当作附件推给她（见 `rin/xdao/feed.py`）
 
-写（回串、发串）不在这里：那要 cookie，等拿到饼干再做。
+写（发串、回串）走网页那套表单：`multipart/form-data` + Cookie `userhash`，见
+`_write`。带图就多一个 `image` 文件部分——表单里就这一格（2026-10-30 实测）。
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ import urllib.request
 from typing import List
 
 from loop import prompt_files
+from rin.tools import media
 
 NAMES = ("xdao",)
 
@@ -453,13 +455,24 @@ def cookie_of(config=None) -> str:
     return value or str(os.environ.get("XDAO_COOKIE") or "").strip()
 
 
-def _multipart(fields: dict) -> tuple:
-    """拼一个 multipart 正文：岛上发串用的就是这个形状。"""
+def _multipart(fields: dict, files=None) -> tuple:
+    """拼一个 multipart 正文：岛上发串/回串用的就是这个形状。
+
+    `files` 是 `[{"field", "name", "mime", "data"}]`——岛上的表单里插图那一格叫
+    `image`（`<input type="file" name="image">`，实测 2026-10-30），一个帖子只给一格。
+    """
     boundary = "----rin" + os.urandom(8).hex()
     chunks = []
     for name, value in fields.items():
         chunks.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n"
                        % (boundary, name, value)).encode("utf-8"))
+    for item in files or []:
+        chunks.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"; "
+                       "filename=\"%s\"\r\nContent-Type: %s\r\n\r\n"
+                       % (boundary, item["field"], item["name"],
+                          item["mime"])).encode("utf-8"))
+        chunks.append(item["data"])
+        chunks.append(b"\r\n")
     chunks.append(("--%s--\r\n" % boundary).encode("utf-8"))
     return b"".join(chunks), "multipart/form-data; boundary=" + boundary
 
@@ -525,10 +538,24 @@ def _write(action: str, params: dict, config=None) -> str:
     if not cookie:
         return "岛上写东西要饼干：设置页「岛」组里把 userhash 那段填上。"
     content = str(params.get("content") or params.get("text") or "").strip()
-    if not content:
-        return "要发的话得先有正文。"
     if len(content) > 1200:
         return "这条太长了（%d 字），岛上一条装不下，先说短一点。" % len(content)
+    picture = None
+    want = params.get("images")
+    if want is None:
+        want = params.get("image")
+    if want:
+        if isinstance(want, list):
+            if len(want) > 1:
+                return "岛上一帖只带一张图（表单里就一格 image）：挑一张。"
+            want = want[0] if want else ""
+        if want:
+            try:
+                picture = media.prepare(config, want)
+            except media.MediaError as exc:
+                return str(exc)
+    if not content and picture is None:
+        return "要发的话得先有正文（或者给一张图）。"
     name = str(params.get("name") or "").strip() or "无名氏"
     title = str(params.get("title") or "").strip()[:60]
     if action == "post":
@@ -553,7 +580,11 @@ def _write(action: str, params: dict, config=None) -> str:
                            "岛上的%s被闸住了：%s" % (kind_name, why))
         return "这条没发：%s" % why
 
-    body, content_type = _multipart(fields)
+    files = None
+    if picture is not None:
+        files = [{"field": "image", "name": picture["name"],
+                  "mime": picture["mime"], "data": picture["data"]}]
+    body, content_type = _multipart(fields, files)
     url = base_of(config) + ("/Home/Forum/doPostThread.html" if action == "post"
                              else "/Home/Forum/doReplyThread.html")
     request = urllib.request.Request(url, data=body, method="POST")
@@ -574,7 +605,9 @@ def _write(action: str, params: dict, config=None) -> str:
     verdict = _verdict(final, raw.decode("utf-8", "replace"))
     if verdict["state"] == "error":
         return "岛那边说：%s" % (verdict["message"] or "没发成（没读懂它的回话）")
-    ident = verdict["id"] or _find_id(action, fields, content, config)
+    ident = verdict["id"] or (_find_id(action, fields, content, config)
+                              if content else "")
+    carried = ("带图：%s" % media.note_of(picture)) if picture is not None else ""
     # 记进"她自己的串"：轮询（`rin.xdao`）只按这份账去看，不扫全站
     tracked = ident or fields.get("resto") or fields.get("fid")
     try:
@@ -585,11 +618,13 @@ def _write(action: str, params: dict, config=None) -> str:
     except Exception:
         pass                      # 记账失败不影响"已经发出去了"这个事实
     if ident:
-        return "发出去了：No.%s · %s/t/%s" % (ident, base_of(config), ident)
-    if verdict["state"] == "ok":
-        return "发出去了（没回号），去看一眼：%s/f/" % base_of(config)
-    return ("不确定发没发出去：岛的回话里既没有成功也没有报错。去看一眼：%s/Forum"
-            % base_of(config))
+        said = "发出去了：No.%s · %s/t/%s" % (ident, base_of(config), ident)
+    elif verdict["state"] == "ok":
+        said = "发出去了（没回号），去看一眼：%s/f/" % base_of(config)
+    else:
+        said = "不确定发没发出去：岛的回话里既没有成功也没有报错。去看一眼：%s/Forum" % (
+            base_of(config))
+    return ("%s｜%s" % (carried, said)) if carried else said
 
 
 def _subscribe(tid, config=None) -> bool:

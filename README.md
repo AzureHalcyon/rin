@@ -33,9 +33,9 @@ rin/
   settings.py        设置表
   memory_bridge.py   记忆工具面
   tool_texts.py      工具描述名单
-  tools/             shell / webtools / workspace / web_access / landlock / bilibili / look / qq / xdao
+  tools/             shell / webtools / workspace / web_access / landlock / myself / bilibili / look / qq / xdao / media
   prompts/tools/     各工具的描述（`wait` 的描述在核心）
-  qq/                QQ 通道适配器（收事件进收件箱、按 via 定向回发）
+  qq/                QQ 通道适配器（只收不发：事件进收件箱；发话由 qq 工具走）
 checks/              自检
 deploy/              systemd 单元、部署与回滚
 data/                运行数据（不进版本控制）
@@ -83,6 +83,22 @@ DeepSeek 的 `/v1/tools/fetch`。搜索分三级：DeepSeek `/v1/tools/search`�
 
 启动时会在工作区写一份《这台机器.md》，说明能写哪儿、怎么装库、限额多少。
 
+### 自我描述
+
+| 工具 | 做什么 |
+|---|---|
+| `myself()` | 看现在这版（多少字、上限多少） |
+| `myself(text="…")` | 整版换掉，下一步生效；`text=""` 等于清空 |
+
+写的是 `<data>/persona.md`——那段挂在 system 上（开场之后、机制之前），核心每步现读，
+所以换完下一步就生效，不用重启。写盘走 `loop.persona.write`，跟网页设置里
+「自我描述 · 她自己写的」那一行是同一条路：同一个字数上限（`persona_chars`）、
+同一份 `persona.log`，也一样把「隔 `persona_hours` 小时自动重写」的计时清零。
+
+一小时只让动一次（`rin/tools/myself.py` 的 `GAP`）：这段在 system 最前面，改一次
+下一步的前缀缓存就整段作废。不到点时工具只回一句「到几点能改」，不动盘——想改的话
+先写工作区草稿，到点再整版换。
+
 ### B 站
 
 一个入口、五个动作（`bilibili(action="help")` 看全部）：
@@ -101,24 +117,70 @@ Harness 插件，本仓不依赖它运行。
 ### 看图
 
 **图片跟着消息进对话**，不另接视觉模型——她那个 `deepseek-v4.1-flash` 端点本身就吃 OpenAI
-的 `image_url` 段（实测：一张卡片图 3.2 秒读出上面的字，prompt 234 token）。
+的 `image_url` 段（实测：一张卡片图片 3.2 秒读出上面的字，prompt 234 token）。
 
 落地与进上下文是两件事：
 
-- 图片落在 `<data>/workspace/收件/<日期>/`，正文里只留一行事实
-  （`（一张 1024×768 的图：收件/2026-10-30/x.jpg）`）；
-- 进件把图片的**路径**挂进 `meta.images`，核心的 `_inbox_entry()` 把那条消息的 `content`
-  拼成段数组：`[{"type":"text",…},{"type":"image","path":"workspace/收件/…"}]`；
+- 图片落在**图片库** `<data>/图片/<年-月>/`，记录里写相对路径
+  `图片/2026-10/20261030-221305-1.jpg`，正文里只留一行事实
+  （`（一张 1024×768 的图：图片/2026-10/…）`）；
+- 进件把图片的**路径**挂进 `meta.images`；她调 `messages` 读的时候，核心把这几张图片的
+  路径拼进**这条工具结果**的 `content`：`[{"type":"text",…},{"type":"image","path":"图片/…"}]`；
 - 拼请求时（`_turns()` → `_data_uri()`）才读文件、缩到长边 1024、转 data URI。
-  **库里存的是路径，不是字节**——一张图片一兆，不这样库和备份都受不了。
+  **库里存的是路径，不是字节**——一张图片一兆，不这样库和备份都受不了。图片清单单独一列
+  （`entries.images`），所以重启之后那条记录还是"带着图片"的；归档时也跟着
+  `原文/<块>.json` 一起走（`content` 是文字，`images` 是路径清单）。
+
+**图片库在工作区外面，这是有意的**：记录里只有路径，文件没了图片就永远回不来；而工作区是她
+`run` 和 `write` 唯一能写的地方，`rm -rf` 一次历史就断。图片库和她平级，沙箱写不进去，
+`loop.backup` 的快照也带上（`图片/`）。`look`、`media`、`_data_uri` 都认 `图片/…` 这个
+前缀；`workspace/收件/…` 这种老写法照样能读（早期收的图片还在那儿按日期分目录放着）。
 
 **图片保质期是 `image_keep_steps` 步（默认 10，设置页「图片」那一组里能改）**：最近这么多步
-里的带图消息才真把图发出去；更早的只留那行字，要在意就翻记录。估 token 时一张图片按 800 算，
-而且只算保质期内那些——不然每一步都在为旧图付钱，块一滚还会把上下文挤满。
+里的带图片消息才真把图片发出去；更早的只留那行字，要在意就翻记录。估 token 时一张图片按
+800 算，而且只算保质期内那些——不然每一步都在为旧图片付钱，块一滚还会把上下文挤满。
 
-- 私聊、群里、网页来的图片都走这一条路（谁发的都一样，都是"她看见了一张图"）；
-- 岛那边：有人回她的串、回复里带图片的，`rin/xdao/feed.py` 会把图落地并挂到进件上；
-- 图片段只出现在**对方说的话**里；她自己说的话、工具结果都还是纯文字。
+- 私聊、群里、网页来的图片都走这一条路（谁发的都一样，都是"她看见了一张图片"）；
+- 岛那边：有人回她的串、回复里带图片的，`rin/xdao/feed.py` 会把图片落地并挂到进件上；
+- **图片挂在工具结果上，不挂 `user`**：渠道来的话要用 `messages` 去读，读到的结果里就带着
+  那几张图片（`tool` 消息的 content 是段数组）；她自己 `look` 的图片也一样，跟着 `look`
+  的结果回来。`user` 只放对方本人在网页 / 命令行里说的话。
+
+NapCat 有几个跟图片有关的动作：
+
+- `get_image`：给它消息里那串 `file` 名，回一个**容器里的绝对路径**
+  （`/app/.config/QQ/…/ori/xxx.jpg`）和一条带 rkey 的 CDN 地址；`download_file_image_stream`
+  是同一件事的分块版。都是**取字节**，不认图片；
+- `ocr_image` 不给（在 `qq_actions.BLOCKED` 里）：schema 写明 Windows 端才有，Linux 上报
+  `image字段可能格式不正确`，或者干脆把请求挂到超时。
+
+所以"读懂画面"这条路只有 `look`——把图片接进记录，让模型自己看。
+
+### 发图片
+
+一次调用就能把**文字和 1~N 张图片**一起发出去。她给的一直是**路径**，不是字节：
+
+```
+qq(action="send_private_msg", params={"user_id": 10000, "text": "看这个",
+                                      "images": ["图片/2026-10/a.jpg", "图片/2026-10/b.png"]})
+xdao(action="reply", params={"id": 50000002, "content": "看这个",
+                             "image": "图片/2026-10/a.jpg"})
+```
+
+底下只有一个 `rin/tools/media.py`：找文件、验文件头（jpg / png / gif / webp）、webp 转
+jpg、太大的缩到长边 1024，回来 `{"name", "mime", "data"}`。两边只是**装法**不同：
+
+- **QQ**：NapCat 的 `message` 只有**段数组**能带图片，所以这时 `message` 会被换成
+  `[文字段, 图片段…]`（文字在前、图片按给的顺序跟在后面）。图片写成 `base64://`——NapCat
+  在容器里，看不见 `/opt/rin/data`，`file://` 传不过去；缩过之后一张一两百 KB，
+  base64 只活在那一个请求里。
+- **岛**：表单里插图那一格叫 `image`（`<input type="file" name="image">`），
+  **一帖一张图片**——多给会当场拒，让她挑一张。文字和一张图片同帖是岛自己的常规用法
+  （`No.69705485` 是一段话配一张截图）。正文可以只写图片。
+
+图片从**图片库**（`图片/…`）或**工作区**里取，两处都挡越界；不是图片的文件（改后缀也骗不过
+文件头）当场拒。发成功会在结果前面写一句"带图 N 张：哪张、多大、缩没缩"——发了哪张
+得留在记录里。
 ### X岛
 
 匿名版的入口：`xdao(action, params)`，七个动作——板块 → 板块里的串 → 一个串和它的回复 → 搜索：
@@ -138,7 +200,7 @@ xdao(action="where", params={"id": 64792888})
 **有饼干时读也会带上**：`27 AI` 这类**受限版面**不带饼干只回 `{"error": …}`，带了才给串
 （2026-10-29 实测；备用 API `api.nmb.best` 不必要）。
 
-帖子带图的会给出 `https://image.nmb.best/…` 的地址——正好交给 `look(url=…)` 去看。
+帖子带图片的会给出 `https://image.nmb.best/…` 的地址——正好交给 `look(url=…)` 去看。
 接口里那个叫 `user_hash` 的字段是**串内显示的名字**（串主、回复都靠它区分谁是谁），
 这个站的"饼干"是同一回事：没有账号，只有一块 cookie。
 
@@ -162,8 +224,9 @@ GET https://xds.wol.moe/api/v1/thread-of/<编号>
 - 作者明确不做：按饼干搜发言、以及速报2/日记/自救互助这几个板块不入索引。
 
 写（`post` / `reply`）走网页表单那条路：`POST Home/Forum/doPostThread.html`（字段
-`fid` / `name` / `title` / `content`，multipart）和 `doReplyThread.html`（`resto` 代替
-`fid`）。身份只用一块 cookie `userhash`，存在设置页「岛」组。
+`fid` / `name` / `title` / `content` / `image`，multipart）和 `doReplyThread.html`（`resto`
+代替 `fid`）。身份只用一块 cookie `userhash`，存在设置页「岛」组。`image` 是文件部分，
+可以不带；表单里就这一格，所以一帖一张。
 
 ### 听：她自己那几个串的回复
 
@@ -204,7 +267,7 @@ class XdnmbCookie {
 
 ### QQ
 
-通道在 `rin.qq`：把 OneBot 事件收进收件箱，按记录上的 `meta.via` 定向回发。
+通道在 `rin.qq`：把 OneBot 事件收进收件箱。**它不发话**——她要回谁，就在 `qq` 工具里发。
 模型这一侧只有一个入口 `qq(action, params)`：
 
 - 动作清单写在 `<数据>/workspace/QQ-动作清单.md`（每次启动现写），
@@ -251,7 +314,10 @@ python -m rin --name 名字 --http 127.0.0.1:8080
 |---|---|
 | `POST /say {"text": "…"}` | 写进 `inbox` |
 | `GET /feed?since=<block>:<seq>&step=<n>` | 增量原文 + 增量用量，断线按游标补齐 |
-| `GET /context` | sink、旧段摘要、上一块、当前块 |
+| `GET /feed?tail=<n>` | 最后 n 条（正序）：网页首屏只用这一小段，不从头重放 |
+| `GET /feed?before=<block>:<seq>&limit=<n>` | 比这个位子更早的一页，往上翻用 |
+| `GET /context` | sink、旧段摘要、上一块（只给条数）、当前块 |
+| `GET /context?prev=1` | 连上一块原文一起给（抽屉里点开才问） |
 | `GET /state` | 状态、块与上下文占用、今日用量、三处模型名、落地侧提示 |
 | `GET /inbox` | 最近进件与每个会话的策略 |
 | `GET /models?kind=chat\|summary\|embed` | 向端点要模型清单（缓存两分钟） |

@@ -32,13 +32,10 @@ FIELDS = (
     {"key": "model", "group": "模型", "label": "主模型", "type": "text",
      "picker": "chat", "help": "说话用的模型"},
     {"key": "summary_model", "group": "模型", "label": "摘要模型", "type": "text",
-     "picker": "summary", "help": "压旧块用的模型，可以比主模型便宜"},
+     "picker": "summary", "help": "压旧块用的模型；走对话那一家，填便宜的省主模型额度"},
     {"key": "persona_model", "group": "模型", "label": "整理用的模型", "type": "text",
      "optional": True,
      "help": "写自我描述那次整理用哪个模型；空 = 跟主模型走（填便宜的就省主模型额度）"},
-    {"key": "summary_provider", "group": "模型", "label": "摘要走哪家", "type": "select",
-     "options": ["auto", "deepseek", "bailian"],
-     "help": "auto：模型名带 qwen 走百炼，其余走主模型端点"},
     {"key": "reasoning_effort", "group": "模型", "label": "思考强度", "type": "select",
      "options": ["", "low", "high", "max"],
      "help": "空 = 端点默认；官方 V4.1 支持 low / high / max，越低想得越少越快"},
@@ -49,6 +46,14 @@ FIELDS = (
     {"key": "max_tokens", "group": "模型", "label": "单次输出上限", "type": "int",
      "min": 128, "max": 32000, "help": "一步最多说多少 token"},
 
+    {"key": "owner_ids", "group": "接口", "label": "我的账号", "type": "text",
+     "optional": True,
+     "help": "逗号分隔，填号或昵称。这些号发来的话算你说的：墙钟按它算「距上次对方"
+             "说话」，消息页也不给它贴「别人」。空 = 用通道自己报的（QQ 桥按白名单标）"},
+    {"key": "owner_mark", "group": "接口", "label": "我消息前的标记", "type": "text",
+     "optional": True,
+     "help": "她读到的每一条你发的消息，前面都拼一个【这个】。名字会改会重名，"
+             "方括号才是那句「这是我的人说的」；空 = 用「对方的名字」那一栏"},
     {"key": "chat_url", "group": "接口", "label": "对话地址", "type": "text",
      "optional": True, "help": "完整 URL（含 /v1）；留空 = 用凭证文件里的"},
     {"key": "chat_key", "group": "接口", "label": "对话密钥", "type": "text",
@@ -164,6 +169,11 @@ FIELDS = (
      "optional": True, "help": "qq 工具调 OneBot 的地址；空 = http://127.0.0.1:3000"},
     {"key": "qq_token", "group": "QQ", "label": "NapCat 令牌", "type": "text",
      "secret": True, "help": "留空 = 不改；空着就用环境里的 NAPCAT_TOKEN"},
+    {"key": "qq_qr_file", "group": "QQ", "label": "二维码文件", "type": "text",
+     "optional": True,
+     "help": "NapCat 等扫码时把二维码写到这个文件；网页「设置 → QQ」上点一下就显示出来，"
+             "手机上直接扫。默认 /opt/napcat/data/cache/qrcode.png（compose 里把 "
+             "/app/napcat/cache 挂到了 ./data/cache）"},
 )
 
 _KEYS = [field["key"] for field in FIELDS]
@@ -339,7 +349,8 @@ def history(data_dir: str, limit: int = 40) -> list:
 
 
 # 存在 settings.json、不进 LoopConfig 的键：接口凭据 + 两个工具的凭据。
-CHANNEL_KEYS = ("chat_url", "chat_key", "embed_url", "embed_key",
+CHANNEL_KEYS = ("owner_ids",
+                "chat_url", "chat_key", "embed_url", "embed_key",
                 "bili_sessdata", "bili_ffmpeg", "bili_asr_model",
                 "xdao_base", "xdao_cookie",
                 "xdao_search_base", "xdao_search_ua",
@@ -405,11 +416,12 @@ def apply_credentials(credentials, values: dict) -> None:
         credentials.chat_url = chat_url_of(current["chat_url"])
     if current["chat_key"]:
         credentials.chat_key = current["chat_key"]
-    # 摘要与嵌入共用一百炼端点：设置里写的就是它的地址/密钥
+    # 嵌入那家（百炼）的地址/密钥：嵌入器从 memory_v2 那份凭证取，这里存下来
+    # 是为了界面提示和语音转写（两者同一个端点、同一个键）。摘要不走这里。
     if current["embed_url"]:
-        credentials.summary_url = embed_base_of(current["embed_url"])
+        credentials.maas_url = embed_base_of(current["embed_url"])
     if current["embed_key"]:
-        credentials.summary_key = current["embed_key"]
+        credentials.maas_key = current["embed_key"]
 
 
 def apply(config, values: dict) -> None:

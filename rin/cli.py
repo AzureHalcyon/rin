@@ -52,10 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--block-tokens", type=int, default=50000,
                         help="当前块攒到多少 token 就压（调试时调小）")
     parser.add_argument("--summary-model", default="deepseek-flash",
-                        help="摘要模型；填 qwen-plus 就走凭证里的百炼端点")
-    parser.add_argument("--summary-provider", default="auto",
-                        choices=("auto", "deepseek", "bailian"),
-                        help="摘要端点；auto 按模型名判断")
+                        help="摘要模型；走对话那一家（设置页「接口」里的对话地址）")
     parser.add_argument("--lexical", action="store_true",
                         help="打开词面检索；默认只用嵌入")
     parser.add_argument("--recent-steps", type=int, default=0,
@@ -137,9 +134,9 @@ def main(argv=None) -> int:
         return 1
 
     web_access.set_tavily_key(credentials.tavily_key)
-    # 语音转写用凭证里那组百炼的键（摘要/嵌入同一个端点），不另配一份。
-    if credentials.summary_key and not os.environ.get("ASR_KEY"):
-        os.environ["ASR_KEY"] = credentials.summary_key
+    # 语音转写用凭证里那组百炼的键（跟嵌入同一个端点），不另配一份。
+    if credentials.maas_key and not os.environ.get("ASR_KEY"):
+        os.environ["ASR_KEY"] = credentials.maas_key
     web_access.set_deepseek_key(credentials.chat_key)
 
     config = LoopConfig(name=args.name, model=args.model,
@@ -147,7 +144,6 @@ def main(argv=None) -> int:
                         context_budget=args.context_budget,
                         block_tokens=args.block_tokens,
                         summary_model=args.summary_model,
-                        summary_provider=args.summary_provider,
                         lexical=args.lexical,
                         recent_steps=args.recent_steps,
                         tool_fold_keep=args.tool_fold_keep,

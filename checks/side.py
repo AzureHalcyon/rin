@@ -349,6 +349,17 @@ def check_web() -> None:
         check(context["sink"]["chars"] > 0, "上下文里该有 sink")
         check(context["limits"]["block_tokens"] == 100000, "上下文里该有块限额")
         check("bands" in context and "previous" in context, "上下文里该有旧段与上一块")
+        # 上一块的原文默认不带：那一块动辄四五百条、两三百 KB，抽屉默认看不到它。
+        # 要看就 ?prev=1（页面上「上一块」点开时才问）。
+        check(context["previous"]["entries"] == [],
+              "默认不该把上一块原文带上：%d 条"
+              % len(context["previous"]["entries"]))
+        check(context["previous"]["loaded"] is False, "默认要标成没取原文")
+        _, full = get("/context?prev=1")
+        check(full["previous"]["loaded"] is True, "prev=1 要真的带上原文")
+        check(len(full["previous"]["entries"]) == full["previous"]["count"],
+              "prev=1 的条目数要和条数对上：%d / %d"
+              % (len(full["previous"]["entries"]), full["previous"]["count"]))
 
         # 抽屉里每条工具结果是一个可折叠的小块，靠 seq 当键。没有 seq 的话全挤成
         # "result:undefined"，点开一个别的跟着开，重画时也认不出谁开着。
@@ -369,6 +380,31 @@ def check_web() -> None:
         cursor = "%d:%d" % (feed["cursor"]["block"], feed["cursor"]["seq"])
         _, more = get("/feed?since=" + cursor)
         check(more["entries"] == [], "游标之后不该重复给同一条")
+
+        # 首屏只要尾：整块从头重放要九百多条、七百多 KB，手机上先看见的是最早的话，
+        # 最新的排在最后才出来。所以首页问 `tail`，往上翻再问 `before`。
+        _, tail = get("/feed?tail=2")
+        check(len(tail["entries"]) == 2, "tail 只要这么多条：%r" % len(tail["entries"]))
+        check([item["seq"] for item in tail["entries"]] ==
+              sorted(item["seq"] for item in tail["entries"]),
+              "tail 也要正序给（页面上从上往下画）：%r"
+              % [item["seq"] for item in tail["entries"]])
+        check(tail["cursor"]["seq"] == tail["entries"][-1]["seq"],
+              "tail 的游标要停在最后那条")
+        check(tail["entries"][-1]["seq"] == feed["entries"][-1]["seq"],
+              "tail 的最后一条该跟整块的最后一条是同一条")
+
+        _, older = get("/feed?before=%d:%d&limit=2"
+                       % (tail["entries"][0]["block"], tail["entries"][0]["seq"]))
+        check(len(older["entries"]) <= 2, "before 最多一页：%r" % len(older["entries"]))
+        check(all(item["seq"] < tail["entries"][0]["seq"] for item in older["entries"]),
+              "before 只给更早的：%r" % [item["seq"] for item in older["entries"]])
+        check(tail["more"] == bool(older["entries"]),
+              "「还有更早的」要跟实际对得上：more=%r / %d 条"
+              % (tail["more"], len(older["entries"])))
+        _, none = get("/feed?before=0:0&limit=2")
+        check(none["entries"] == [], "到了头就什么都别给：%r" % none["entries"])
+        check(none["more"] is False, "到头了就别再说还有更早的")
 
         # 「消息」那一页的数据：本机说的话不算外部来的，外部进件要带来源与状态
         post("/inbox", {"text": "外部的问候", "source": "QQ", "chat_type": "private",
@@ -400,6 +436,33 @@ def check_web() -> None:
               % [row["ext_id"] for row in box["items"]])
         check("notified" in checked and "consumed" in checked,
               "仪表盘要能看出叫没叫过、读没读：%r" % checked)
+        # 「这条是对方说的」：墙钟拿它算「距上次对方说话」。通道那边的标记要能存下来，
+        # 没标的（群里别人 / 岛上的陌生人）不该被当成对方；网页直投的本来就是对方。
+        post("/inbox", {"text": "他说的一句", "source": "QQ", "chat_type": "private",
+                        "chat_id": "10001", "sender_name": "Rin 的人",
+                        "from_user": True})
+        _, box = get("/inbox?limit=50")
+        flags = {row["text"]: row.get("from_user") for row in box["items"]}
+        check(flags.get("他说的一句") == 1, "标了 from_user 的要存下来：%r" % flags)
+        check(flags.get("外部的问候") == 0, "没标的进件不该算成对方：%r" % flags)
+        check(flags.get("在吗") == 1, "网页直投的本来就是对方：%r" % flags)
+
+        # 设置里填了「我的账号」：号对上的算对方说的；没写的号即使通道报了也不算。
+        # 没写这一项时，用通道自己报的兜底（QQ 桥按白名单标）。
+        call_settings = lambda values: settings.save(workdir, values)
+        call_settings({"owner_ids": "10001，Rin 的人"})
+        post("/inbox", {"text": "设置认下的一句", "source": "QQ", "chat_type": "private",
+                        "chat_id": "10001", "sender_id": "10001",
+                        "sender_name": "Rin 的人", "from_user": False})
+        post("/inbox", {"text": "号对不上的一句", "source": "QQ", "chat_type": "private",
+                        "chat_id": "20002", "sender_id": "20002",
+                        "sender_name": "路人", "from_user": True})
+        _, box = get("/inbox?limit=60")
+        flags = {row["text"]: row.get("from_user") for row in box["items"]}
+        check(flags.get("设置认下的一句") == 1, "设置里填了「我的账号」，就按它认人：%r" % flags)
+        check(flags.get("号对不上的一句") == 0,
+              "设置里没写的号，通道报了也不算：%r" % flags)
+        call_settings({"owner_ids": ""})
         check(any(row["chat_id"] == "10001" for row in box["channels"]),
               "会话清单里该有这个会话")
 
@@ -472,6 +535,8 @@ def check_qq_bridge() -> None:
               "收下的进件要带来源与会话：%r" % taken)
         check(taken.get("sender_name") == "Azure" and taken.get("text") == "hi rin",
               "收下的进件要带发言人和正文：%r" % taken)
+        check(taken.get("from_user") is True,
+              "白名单里的人（就是对方）要标成 from_user：%r" % taken)
         try:
             post(httpd, event, token="wrong-token")
         except urllib.error.HTTPError as exc:
@@ -495,67 +560,17 @@ def check_qq_bridge() -> None:
         httpd.shutdown()
         httpd.server_close()
 
-    # ③ 回发：只把「回给外部」的那几句发出去，按记录上的 via 定向
+    # ③ 通道只收不发：适配器那边没有"把她说的话发回去"的路。2026-10-30 拆掉了自动回发
+    #    ——她已经在 qq 工具里自己发，两条路并着走会把同一句发两遍；这条守着别再长回来。
     config = qq.Config(gateway="http://127.0.0.1:1", token="tok",
                        napcat="http://127.0.0.1:1", napcat_token="",
                        listen="127.0.0.1:0", allow_users=["10001"],
                        allow_groups=["999"], group_mode="all")
     bridge = qq.Bridge(config)
-    got = []
-    bridge.send_back = lambda text, chat_type="private", chat_id="": got.append(
-        (text, chat_type, chat_id)) or True
-    feeds = [
-        {"entries": [], "cursor": {"block": 2, "seq": 301}},        # 首轮只对齐
-        {"entries": [
-            {"role": "assistant", "text": "回私聊的一句",
-             "meta": {"via": {"source": "QQ", "chat_type": "private",
-                              "chat_id": "10001", "chat_name": "她的人"}}},
-            {"role": "assistant", "text": "网页里聊的一句", "meta": {}},
-            {"role": "assistant", "text": "回群里的一句",
-             "meta": {"via": {"source": "QQ", "chat_type": "group",
-                              "chat_id": "999", "chat_name": "群甲"}}},
-            {"role": "user", "text": "别人说的", "meta": {}},
-        ], "cursor": {"block": 2, "seq": 305}},
-    ]
-    bridge.feed.get = lambda path: feeds.pop(0)
-    try:
-        bridge.pump_feed()
-        check(got == [], "首轮只对齐游标，历史不该重发：%r" % got)
-        bridge.pump_feed()
-    finally:
-        pass
-    check(got == [("回私聊的一句", "private", "10001"),
-                  ("回群里的一句", "group", "999")],
-          "只该发回给叫醒她的那几个会话：%r" % got)
-    check(bridge.cursor == {"block": 2, "seq": 305}, "游标要跟着走到最后一条")
-
-    # ③' 对齐游标要读完所有分页：/feed 一轮最多 300 条，只对一轮的话，
-    #     第二轮那些"旧记录"会被当成新话发出去（重启一次就把历史复述一遍）
-    page_bridge = qq.Bridge(config)
-    early = []
-    page_bridge.send_back = lambda text, chat_type="private", chat_id="": \
-        early.append(text) or True
-    pages = [
-        {"entries": [{"role": "assistant", "text": "很久以前的一句",
-                      "meta": {"via": {"source": "QQ", "chat_type": "private",
-                                       "chat_id": "10001"}}}],
-         "cursor": {"block": 1, "seq": 300}, "more": True},
-        {"entries": [{"role": "assistant", "text": "更近的一句",
-                      "meta": {"via": {"source": "QQ", "chat_type": "private",
-                                       "chat_id": "10001"}}}],
-         "cursor": {"block": 2, "seq": 5}, "more": False},
-        {"entries": [{"role": "assistant", "text": "新的这一句",
-                      "meta": {"via": {"source": "QQ", "chat_type": "private",
-                                       "chat_id": "10001"}}}],
-         "cursor": {"block": 2, "seq": 6}, "more": False},
-    ]
-    page_bridge.feed.get = lambda path: pages.pop(0)
-    page_bridge.pump_feed()
-    check(early == [], "对齐游标时一条历史都不该发：%r" % early)
-    check(page_bridge.primed and page_bridge.cursor == {"block": 2, "seq": 5},
-          "对齐要读到最后一页：%r" % (page_bridge.cursor,))
-    page_bridge.pump_feed()
-    check(early == ["新的这一句"], "对齐之后的新话才发：%r" % early)
+    leftovers = [name for name in ("pump_feed", "_deliver", "send_back", "feed",
+                                   "cursor", "primed", "send_failed")
+                 if hasattr(bridge, name)]
+    check(leftovers == [], "QQ 适配器不该有自动回发的路：%r" % leftovers)
 
     # ④ 私聊的名字：备注优先（事件里只带昵称，备注要问好友列表），拿不到退昵称
     remark_bridge = qq.Bridge(config)
@@ -600,33 +615,9 @@ def check_qq_bridge() -> None:
         chunk_httpd.server_close()
 
     # ⑥ 发出去的话要核 NapCat 的返回：HTTP 200 但 retcode 非 0 = 没发出去
-    #    （2026-10-28 账号掉线时就是这样：她"回了"，可 QQ 上什么都没有）
-    sent = []
-    send_bridge = qq.Bridge(config)
+    #    （2026-10-28 账号掉线时就是这样：她"回了"，可 QQ 上什么都没有）。
+    #    发话只有 qq 工具这一条路，核返回也就在工具里——见 check_tools 那一段。
     original_post = qq._post_json
-
-    def fake_post(url, payload, token="", timeout=15):
-        sent.append(payload)
-        return {"status": "failed", "retcode": 1400, "message": "账号已离线"}
-
-    qq._post_json = fake_post
-    try:
-        ok = send_bridge.send_back("在呢", "private", "10001")
-    finally:
-        qq._post_json = original_post
-    check(ok is False, "被拒的发送不该当成功：%r" % ok)
-    check(sent and sent[0].get("user_id") == 10001,
-          "发私聊要用 user_id：%r" % sent)
-
-    qq._post_json = lambda url, payload, token="", timeout=15: {
-        "status": "ok", "retcode": 0, "data": {"message_id": 1}}
-    try:
-        check(send_bridge.send_back("在呢", "private", "10001") is True,
-              "发成功要报成功")
-        check(send_bridge.send_back("在呢", "private", "不是号码") is False,
-              "会话号不是数字要当场拒")
-    finally:
-        qq._post_json = original_post
 
     # ⑦ 账号掉线要主动说：NapCat 掉线时不报错，只是"什么都没发生"
     qq._post_json = lambda url, payload, token="", timeout=15: {
@@ -646,20 +637,6 @@ def check_qq_bridge() -> None:
         check(down_bridge.down == 3, "连续问不到要计数：%r" % down_bridge.down)
     finally:
         qq._post_json = original_post
-
-    # ⑨ 发不出去就别推游标：这一批下一轮还要重发，推了就永久丢
-    stuck = qq.Bridge(config)
-    stuck.send_back = lambda text, chat_type="private", chat_id="": False
-    stuck.feed.get = lambda path: {"entries": [
-        {"role": "assistant", "text": "没发出去的一句",
-         "meta": {"via": {"source": "QQ", "chat_type": "private",
-                          "chat_id": "10001"}}}],
-        "cursor": {"block": 9, "seq": 9}, "more": False}
-    stuck.primed = True
-    stuck.pump_feed()
-    check(stuck.cursor == {"block": 0, "seq": 0},
-          "发不出去就不该推游标：%r" % stuck.cursor)
-    check(stuck.send_failed == 1, "失败要记一笔（下一轮重试）：%r" % stuck.send_failed)
 
     # ⑩ 推网关失败：回 5xx 让 NapCat 重发，而且不能记成"收过"
     fail_bridge, fail_httpd = start("127.0.0.1", "")
@@ -690,11 +667,24 @@ def check_qq_bridge() -> None:
                  message=[{"type": "text", "data": {"text": "随便聊聊"}}])
     item = group_bridge.on_event(plain)
     check(item and item.get("policy") == "", "没 @ 的群消息不传策略：%r" % item)
+    check(item and item.get("from_user") is False,
+          "群里别人说的话不该标成「对方」：%r" % item)
     at_msg = dict(base, message_id="g2",
                   message=[{"type": "at", "data": {"qq": "10000"}},
                            {"type": "text", "data": {"text": " 叫她"}}])
     item = group_bridge.on_event(at_msg)
     check(item and item.get("policy") == "wake", "被 @ 的群消息要 wake：%r" % item)
+
+    # 本人在群里说话（白名单里）也算「对方」：群里别人说的话不能顶替他
+    owner_cfg = qq.Config(gateway="http://127.0.0.1:1", token="tok",
+                          napcat="http://127.0.0.1:1", napcat_token="",
+                          listen="127.0.0.1:0", allow_users=["10001"],
+                          allow_groups=["999"], group_mode="all")
+    owner_bridge = qq.Bridge(owner_cfg)
+    owner_bridge._group_name = lambda gid: "群甲"
+    item = owner_bridge.on_event(dict(at_msg, message_id="g3"))
+    check(item and item.get("from_user") is True,
+          "本人在群里说话也算「对方」：%r" % item)
 
     # ⑧ 对账补拉：掉线那段时间进来的消息 QQ 不会重新推事件，只能自己问历史
     catch_bridge = qq.Bridge(config)
@@ -834,6 +824,71 @@ def check_qq_tool() -> None:
               "成功要把返回带回来：%r" % ok_reply)
         check(called == ["send_private_msg"], "被拒的动作不该真的发出去：%r" % called)
 
+        # ocr_image 是故意关掉的：NapCat 的 OCR 只有 Windows 端才有，Linux 上会把请求挂住
+        called.clear()
+        qq_tool._post = lambda action, params, config=None: (
+            called.append(action) or {"status": "ok", "retcode": 0})
+        try:
+            ocr = qq_tool.call("qq", json.dumps(
+                {"action": "ocr_image", "params": {"image": "x.jpg"}}), config)
+        finally:
+            qq_tool._post = original
+        check("不给" in ocr and "Windows" in ocr, "ocr_image 要关掉并说清原因：%r" % ocr)
+        check(called == [], "关掉的接口不该真的调过去：%r" % called)
+        check("ocr_image" not in qq_actions.group_text("识别与翻译"),
+              "动作表里不该再列它")
+        check("ocr_image" in qq_actions.render_index(),
+              "关掉的动作要写进索引的「不能调」那一节")
+
+        # 发图：`message` 要换成段数组，图用 base64://——NapCat 在容器里，看不见数据目录
+        from PIL import Image
+
+        root = os.path.join(workdir, "workspace", "收件")
+        os.makedirs(root, exist_ok=True)
+        Image.new("RGB", (300, 200), (1, 2, 3)).save(
+            os.path.join(root, "一张.png"), format="PNG")
+        Image.new("RGB", (320, 240), (40, 50, 60)).save(
+            os.path.join(root, "两张.jpg"), format="JPEG")
+        seen = {}
+        qq_tool._post = lambda action, params, config=None: (
+            seen.update(params) or {"status": "ok", "retcode": 0,
+                                    "data": {"message_id": 1}})
+        try:
+            said = qq_tool.call("qq", json.dumps(
+                {"action": "send_private_msg",
+                 "params": {"user_id": 1, "text": "看图",
+                            "images": ["收件/一张.png", "收件/两张.jpg"]}}), config)
+        finally:
+            qq_tool._post = original
+        parts = seen.get("message")
+        check(isinstance(parts, list) and len(parts) == 3,
+              "文字 + 两张图 = 三段：%r" % (parts,))
+        check(parts[0] == {"type": "text", "data": {"text": "看图"}},
+              "文字在前（`text` 是 `message` 的别名）：%r" % (parts[0],))
+        for index in (1, 2):
+            check(parts[index]["type"] == "image"
+                  and parts[index]["data"]["file"].startswith("base64://"),
+                  "第 %d 段是 base64 的图：%r" % (index + 1, parts[index]))
+        check("text" not in seen,
+              "`text` 是这边的别名，不该原样塞给 NapCat：%r" % list(seen))
+        check("image" not in seen and "images" not in seen,
+              "`image(s)` 是这边的暗号，不该原样塞给 NapCat：%r" % list(seen))
+        check("带图 2 张" in said and "收件/一张.png" in said and "收件/两张.jpg" in said,
+              "要交代发的是哪几张：%r" % said)
+
+        called.clear()
+        qq_tool._post = lambda action, params, config=None: (
+            called.append(action) or {"status": "ok", "retcode": 0})
+        try:
+            miss = qq_tool.call("qq", json.dumps(
+                {"action": "send_private_msg",
+                 "params": {"user_id": 1, "text": "x", "image": "收件/没有.png"}}),
+                config)
+        finally:
+            qq_tool._post = original
+        check("没有这个文件" in miss, "找不到图要说清楚：%r" % miss)
+        check(called == [], "找不到图就不该惊动 NapCat：%r" % called)
+
         # retcode 不是 0 = 没做成：别把失败报成成功
         qq_tool._post = lambda action, params, config=None: {"status": "failed", "retcode": 1400,
                                                 "message": "账号已离线"}
@@ -843,6 +898,97 @@ def check_qq_tool() -> None:
         finally:
             qq_tool._post = original
         check("没做成" in bad, "retcode 非 0 要说没做成：%r" % bad)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def check_persona_tool() -> None:
+    """她自己写的那段：读得了、整版换得了、一小时内只让动一次、超上限截断。
+
+    写盘走 `loop.persona`，跟网页那一行「自我描述 · 她自己写的」是同一条路；
+    换完下一步就生效（system 每步现读），所以这条测的是「下一步的 system 里看得见」。
+    """
+    from loop import persona as self_store
+
+    from rin.tools import myself as self_tool
+
+    workdir = tempdir("rin-self-")
+    try:
+        config = _loop_config(name="自检", data_dir=workdir, block_tokens=100000,
+                              persona_enabled=True, persona_chars=200)
+        tools = self_tool.tools(config)
+        check(len(tools) == 1 and tools[0]["function"]["name"] == "myself",
+              "工具面里该有一个 myself：%r" % tools)
+        check("text" in tools[0]["function"]["parameters"]["properties"],
+              "参数里要有 text")
+
+        # 还没写过：说清是空的、上限多少
+        out = self_tool.call("myself", "{}", config)
+        check("现在是空的" in out and "200" in out,
+              "没写过时要说清空着、上限多少：%r" % out)
+
+        # 写进去
+        body = "我说话短，几句能说清的就几句。"
+        out = self_tool.call("myself", json.dumps({"text": body}), config)
+        check("换好了" in out, "写完要报换了：%r" % out)
+        check(self_store.read(config) == body,
+              "要落到 persona.md：%r" % self_store.read(config))
+        check(self_store.stamp_of(config) > 0, "要记下这次动过的时刻")
+        log = os.path.join(workdir, "persona.log")
+        check(os.path.exists(log) and body in open(log, encoding="utf-8").read(),
+              "要留一份历史在 persona.log")
+
+        # 下一步就生效：system 里看得见
+        store = LoopStore(os.path.join(workdir, "loop.sqlite3"))
+        loop = Loop(config, credentials=None, store=store,
+                    compressor=Compressor(config, summarizer=fake_summarizer),
+                    memory=Memory.disabled(), client=FakeClient())
+        system = loop.context.system_text()
+        check("【我自己写的】" in system and body in system,
+              "写进去之后 system 里就该有这段：%r" % system[:160])
+        # 换掉之后 system 跟着变（同一份文件、每步现读）
+        self_store.write(config, "换过一版。")
+        check("换过一版。" in loop.context.system_text(),
+              "改了就要在下一步的描述里看到：%r" % loop.context.system_text()[:160])
+        store.close()
+
+        # 一小时之内不给再动：不写盘，并指条「先写草稿」的路
+        before = self_store.read(config)
+        again = self_tool.call("myself", json.dumps({"text": "另一种说法"}), config)
+        check("一小时内" in again and "草稿" in again,
+              "一小时之内要拦住并指条路：%r" % again)
+        check(self_store.read(config) == before, "被拦住的时候不该动盘")
+
+        # 过了一小时就放行
+        self_store.touch_stamp(config, time.time() - self_tool.GAP - 1)
+        out = self_tool.call("myself", json.dumps({"text": "换一版"}), config)
+        check("换好了" in out and self_store.read(config) == "换一版",
+              "到点要放行：%r / %r" % (out, self_store.read(config)))
+
+        # 超上限：截断，并且说清截了多少
+        self_store.touch_stamp(config, time.time() - self_tool.GAP - 1)
+        out = self_tool.call("myself", json.dumps({"text": "长" * 260}), config)
+        check(len(self_store.read(config)) == 200,
+              "超上限要截到 200：%d" % len(self_store.read(config)))
+        check("截掉" in out, "截断了要说一声：%r" % out)
+
+        # 空串 = 清空
+        self_store.touch_stamp(config, time.time() - self_tool.GAP - 1)
+        out = self_tool.call("myself", json.dumps({"text": ""}), config)
+        check("清空" in out and self_store.read(config) == "",
+              "空串等于清空：%r" % out)
+        check("【我自己写的】" not in loop.context.system_text(),
+              "清空之后 system 里就不该再有这段")
+
+        # 「自我描述」关着的时候：照写，但要说清不注入
+        self_store.touch_stamp(config, time.time() - self_tool.GAP - 1)
+        config.persona_enabled = False
+        out = self_tool.call("myself", json.dumps({"text": "写了也不注入"}), config)
+        check("关着" in out, "关着的时候要说清不注入：%r" % out)
+
+        # 网页那一行写的是同一份文件
+        self_store.write(config, "网页改的")
+        check(self_store.read(config) == "网页改的", "两条路写同一份 persona.md")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -916,7 +1062,17 @@ def check_settings() -> None:
               "设置里该有嵌入模型")
         check(fields["embed_model"].get("picker") == "embed", "嵌入模型该能从列表挑")
         check(fields["model"].get("picker") == "chat", "主模型该能从列表挑")
-        check(fields["summary_provider"]["type"] == "select", "摘要端点该是下拉")
+        check(fields["summary_model"].get("picker") == "summary", "摘要模型该能从列表挑")
+        check(fields["owner_ids"]["group"] == "接口"
+              and fields["owner_ids"]["label"] == "我的账号",
+              "设置里该能填「我的账号」：%r" % fields.get("owner_ids"))
+        check(fields["owner_mark"]["group"] == "接口"
+              and fields["owner_mark"].get("optional"),
+              "设置里该能填消息前的标记：%r" % fields.get("owner_mark"))
+        check("summary_provider" not in fields,
+              "不该再有「摘要走哪家」：摘要就走对话那一家")
+        check(not hasattr(config, "summary_provider"),
+              "配置上也不该留 summary_provider（老的两家分流）")
         check(payload["memory"]["embed_dim"] > 0, "设置里该报嵌入维度")
         check(fields["qq_token"].get("secret") and fields["bili_sessdata"].get("secret"),
               "两个工具的凭据字段要标成 secret")
@@ -940,10 +1096,10 @@ def check_settings() -> None:
         check(row["text"] == "我改的这句", "改完要读回来：%r" % row["text"])
         check(row["resettable"] is False, "她写的那段不给「恢复默认」（清空是另一回事）")
 
-        call("/settings", {"values": {"summary_provider": "bailian"}}, "PUT")
-        check(config.summary_provider == "bailian", "下拉的值要能存")
+        call("/settings", {"values": {"reasoning_effort": "low"}}, "PUT")
+        check(config.reasoning_effort == "low", "下拉的值要能存")
         try:
-            call("/settings", {"values": {"summary_provider": "瞎写"}}, "PUT")
+            call("/settings", {"values": {"reasoning_effort": "瞎写"}}, "PUT")
         except urllib.error.HTTPError as exc:
             check(exc.code == 400, "下拉的野值该 400，拿到 %d" % exc.code)
         else:
@@ -1027,6 +1183,36 @@ def check_settings() -> None:
         check(control.stop_requested(), "重启是给循环一个停止请求")
         control.reset()
         check(not control.stop_requested(), "重置之后不该还停着")
+
+        # QQ 那一格：在线情况 + 二维码（手机上把号救回来用）。NapCat 指到一个
+        # 没人听的端口，就当它掉着；二维码文件从设置里那个路径读。
+        qr_path = os.path.join(workdir, "qrcode.png")
+        call("/settings", {"values": {"qq_base": "http://127.0.0.1:1",
+                                      "qq_qr_file": qr_path}}, "PUT")
+        qq = call("/qq/status")
+        check(qq["online"] is False, "NapCat 连不上要报离线：%r" % qq)
+        check("127.0.0.1:1" in qq["base"], "要告诉人问的是哪个地址：%r" % qq["base"])
+        check(bool(qq["error"]), "连不上要带一句原因：%r" % qq)
+        check(qq["qr"]["exists"] is False, "还没二维码就别说是有的：%r" % qq["qr"])
+        try:
+            call("/qq/qr")
+        except urllib.error.HTTPError as exc:
+            check(exc.code == 404, "没有二维码该 404，拿到 %d" % exc.code)
+        else:
+            raise AssertionError("没有二维码还回了 200")
+
+        with open(qr_path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\nfake-qr-bytes")
+        qq = call("/qq/status")
+        check(qq["qr"]["exists"] is True and qq["qr"]["bytes"] > 0,
+              "放了二维码文件就该看得见：%r" % qq["qr"])
+        request = urllib.request.Request(base + "/qq/qr")
+        request.add_header("Authorization", "Bearer tok")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = response.read()
+            kind = response.headers.get("Content-Type") or ""
+        check(raw.startswith(b"\x89PNG"), "二维码要原样给出去：%r" % raw[:8])
+        check("image/png" in kind, "要按图片给：%r" % kind)
     finally:
         if httpd is not None:
             httpd.shutdown()
@@ -1199,8 +1385,8 @@ def check_channel_settings() -> None:
                                            "embed_key": "ek"})
         check(creds.chat_url == "https://b.test/v1/chat/completions", "对话地址要归一")
         check(creds.chat_key == "old", "没给密钥就沿用凭证里的")
-        check(creds.summary_url == "https://c.test/v1", "嵌入地址盖到百炼那组")
-        check(creds.summary_key == "ek", "嵌入密钥也盖过去")
+        check(creds.maas_url == "https://c.test/v1", "嵌入地址盖到百炼那组")
+        check(creds.maas_key == "ek", "嵌入密钥也盖过去")
         check("secret" in str([f for f in settings.FIELDS
                                if f["key"] == "chat_key"][0]), "密钥字段要标记成 secret")
         check(settings.embed_base_of("https://x.test/v1/chat/completions")
@@ -1208,7 +1394,7 @@ def check_channel_settings() -> None:
         check(settings.embed_base_of("https://x.test/v1/embeddings")
               == "https://x.test/v1", "/embeddings 也要收")
         settings.apply_credentials(creds, {"embed_url": "https://d.test/v1/chat/completions"})
-        check(creds.summary_url == "https://d.test/v1", "贴整条也存基础地址")
+        check(creds.maas_url == "https://d.test/v1", "贴整条也存基础地址")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -1632,14 +1818,17 @@ def check_image() -> None:
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
 
         block, landed = web._image_block(workdir, [{"b64": encoded}])
-        check("（一张 2000×1000 的图：收件/" in block,
-              "正文里要留一行事实：%r" % block)
-        check(len(landed) == 1 and landed[0]["path"].startswith("workspace/收件/"),
-              "清单里的路径要相对数据目录：%r" % (landed,))
+        check("（一张 2000×1000 的图：图片/" in block,
+              "正文里要留一行事实（图库路径）：%r" % block)
+        check(len(landed) == 1 and landed[0]["path"].startswith("图片/"),
+              "清单里的路径要相对数据目录、落在图库：%r" % (landed,))
         check(landed[0]["w"] == 2000 and landed[0]["h"] == 1000,
               "尺寸要记下来：%r" % (landed[0],))
         check(os.path.isfile(os.path.join(workdir, landed[0]["path"])),
               "说要落地就要真在盘上")
+        # 图库在工作区外面：她的 run / write 动不到
+        check(not landed[0]["path"].startswith("workspace"),
+              "图库不该放在工作区里：%r" % (landed[0]["path"],))
         check(web._image_block(workdir, []) == ("", []), "没有图就什么都不加")
         check("没取到" in web._image_block(
             workdir, [{"url": "http://127.0.0.1:1/x.png"}])[0],
@@ -1675,8 +1864,8 @@ def check_image() -> None:
         text = str((items[0] or {}).get("text") or "")
         meta = (items[0] or {}).get("meta") or {}
         check("（一张 2000×1000 的图：" in text, "进件正文里要有事实行：%r" % text)
-        check(meta.get("images") and meta["images"][0]["path"].startswith("workspace/"),
-              "图清单要挂进 meta：%r" % (meta,))
+        check(meta.get("images") and meta["images"][0]["path"].startswith("图片/"),
+              "图清单要挂进 meta（图库路径）：%r" % (meta,))
         check(store.inbox_has_ext("QQ:img-1"), "只带图的进件也要记账")
         with urllib.request.urlopen(
                 "http://127.0.0.1:%d/" % httpd.server_address[1], timeout=5) as response:
@@ -1689,6 +1878,89 @@ def check_image() -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def check_media() -> None:
+    """往外发图那一段：只认工作区、验文件头、太大就缩、回来还说得出是哪张。
+
+    这一段是 `qq` 和 `xdao` 共用的——两边要的都是"一坨能塞进请求的字节"，差别只在
+    怎么装（base64 还是 multipart），所以分开自检。
+    """
+    from PIL import Image
+
+    from rin.tools import media
+
+    workdir = tempdir("media-")
+    try:
+        cfg = _loop_config(name="自检", data_dir=workdir)
+        root = os.path.join(workdir, "workspace", "收件")
+        os.makedirs(root, exist_ok=True)
+
+        big = os.path.join(root, "big.png")
+        Image.new("RGB", (2000, 1000), (10, 20, 30)).save(big, format="PNG")
+        picture = media.prepare(cfg, "收件/big.png")
+        check(picture["shrunk"] and picture["mime"] == "image/jpeg",
+              "长边超过 1024 要缩成 JPEG：%r" % ((picture["mime"], picture["shrunk"]),))
+        check(max(picture["w"], picture["h"]) <= media.MAX_EDGE,
+              "缩完长边不该超过 1024：%r" % ((picture["w"], picture["h"]),))
+        check(picture["data"][:3] == b"\xff\xd8\xff" and isinstance(picture["data"], bytes),
+              "缩过的得是张真 JPEG：%r" % (picture["data"][:3],))
+        check(picture["path"] == "workspace/收件/big.png",
+              "路径按数据目录那种写法：%r" % picture["path"])
+        check(picture["name"].endswith(".jpg"), "文件名跟着缩过的格式：%r" % picture["name"])
+        check("收件/big.png" in media.note_of(picture) and "KB" in media.note_of(picture),
+              "要说清发的是哪张、多大：%r" % media.note_of(picture))
+
+        small = os.path.join(root, "small.png")
+        Image.new("RGB", (320, 200), (200, 200, 200)).save(small, format="PNG")
+        kept = media.prepare(cfg, "workspace/收件/small.png")   # 带前缀也认
+        check(kept["mime"] == "image/png" and not kept["shrunk"],
+              "小图不该动它：%r" % ((kept["mime"], kept["shrunk"]),))
+        with open(small, "rb") as handle:
+            check(kept["data"] == handle.read(), "小图要原样发")
+
+        webp = os.path.join(root, "一张.webp")
+        Image.new("RGB", (300, 240), (5, 6, 7)).save(webp, format="WEBP")
+        turned = media.prepare(cfg, "收件/一张.webp")
+        check(turned["mime"] == "image/jpeg" and turned["name"].endswith(".jpg"),
+              "webp 要转成 jpg 再发：%r" % ((turned["mime"], turned["name"]),))
+
+        # 图库里的图也能发：`图片/…` 指向 <数据>/图片，不在工作区里
+        gallery = os.path.join(workdir, "图片", "2026-10")
+        os.makedirs(gallery, exist_ok=True)
+        Image.new("RGB", (200, 100), (3, 4, 5)).save(
+            os.path.join(gallery, "20261030-180000-1.png"), format="PNG")
+        stored = media.prepare(cfg, "图片/2026-10/20261030-180000-1.png")
+        check(stored["path"] == "图片/2026-10/20261030-180000-1.png",
+              "图库里的图按原样写路径：%r" % stored["path"])
+        try:
+            media.prepare(cfg, "图片/../../etc/passwd")
+        except media.MediaError as exc:
+            check("跑到外面去了" in str(exc), "图库也不许越界：%r" % str(exc))
+        else:
+            check(False, "图库越界该被拒")
+
+        for bad, hint in (("../../etc/passwd", "跑到外面去了"),
+                          ("收件/没有这张.jpg", "没有这个文件"),
+                          ("", "要给一张图的路径")):
+            try:
+                media.prepare(cfg, bad)
+            except media.MediaError as exc:
+                check(hint in str(exc), "%r 要说明白：%r" % (bad, str(exc)))
+            else:
+                check(False, "%r 该被拒" % bad)
+
+        fake = os.path.join(root, "假的.jpg")
+        with open(fake, "wb") as handle:
+            handle.write(b"not an image at all")
+        try:
+            media.prepare(cfg, "收件/假的.jpg")
+        except media.MediaError as exc:
+            check("不像图" in str(exc), "改个后缀骗不过去：%r" % str(exc))
+        else:
+            check(False, "不是图就该拒")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def check_xdao() -> None:
     """X岛 只读那一层：HTML 摊平、板块/串/回复怎么拼、出错说什么。
 
@@ -1696,6 +1968,8 @@ def check_xdao() -> None:
     2026-10-29 实测的字段抄的（`user_hash` 其实是显示的名字、`img`+`ext` 拼图床地址）。
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from PIL import Image
 
     from rin.tools import xdao
 
@@ -1838,6 +2112,7 @@ def check_xdao() -> None:
                 posted.append({"path": self.path.split("?")[0],
                                "cookie": self.headers.get("Cookie") or "",
                                "type": self.headers.get("Content-Type") or "",
+                               "raw": body,
                                "body": body.decode("utf-8", "replace")})
                 if "坏" in body.decode("utf-8", "replace"):
                     page = ('<div class="system-message"><h1>:(</h1>'
@@ -1908,6 +2183,47 @@ def check_xdao() -> None:
             check(bool(replies), "回串走 doReplyThread")
             check('name="resto"' in replies[-1]["body"] and "50000002" in replies[-1]["body"],
                   "回串要带 resto")
+
+            # ── 带图：表单里那一格叫 image，文件部分要是真的图字节 ────────────
+            limit_reset = os.path.join(workdir, "outbound.json")
+            os.remove(limit_reset)
+            img_dir = os.path.join(workdir, "workspace", "收件")
+            os.makedirs(img_dir, exist_ok=True)
+            Image.new("RGB", (800, 600), (9, 9, 9)).save(
+                os.path.join(img_dir, "岛图.png"), format="PNG")
+            said = xdao.call("xdao", json.dumps(
+                {"action": "reply", "params": {"id": 50000002, "content": "带图的",
+                                               "image": "收件/岛图.png"}}), cfg)
+            check("发出去了" in said and "带图" in said,
+                  "带图发成了要说一声：%r" % said)
+            with_image = [record for record in posted
+                          if record["path"] == "/Home/Forum/doReplyThread.html"
+                          and b'name="image"' in record["raw"]]
+            check(bool(with_image), "带图的回串里要有 image 文件部分")
+            raw = with_image[-1]["raw"] if with_image else b""
+            check('filename="岛图.png"'.encode("utf-8") in raw,
+                  "文件名要原样带上：%r" % raw[:400])
+            check(b"Content-Type: image/png" in raw, "文件部分要有类型")
+            check(b"\x89PNG" in raw, "图得原样在正文里，别只写个路径")
+            check("带图：" in said and "收件/岛图.png" in said,
+                  "结果里要交代带了哪张：%r" % said)
+
+            # 只有图没有正文：岛收（表单上"内容和图片不能同时为空"）
+            said = xdao.call("xdao", json.dumps(
+                {"action": "reply", "params": {"id": 50000002,
+                                               "image": "收件/岛图.png"}}), cfg)
+            check("发出去了" in said, "只带图也该发得出去：%r" % said)
+
+            # 一帖只有一格：两张就拒；找不到的图、不是图的文件也拒
+            said = xdao.call("xdao", json.dumps(
+                {"action": "reply", "params": {"id": 50000002, "content": "x",
+                                               "images": ["收件/岛图.png",
+                                                          "收件/岛图.png"]}}), cfg)
+            check("只带一张图" in said, "两张图要拦住：%r" % said)
+            said = xdao.call("xdao", json.dumps(
+                {"action": "reply", "params": {"id": 50000002, "content": "x",
+                                               "image": "../../etc/passwd"}}), cfg)
+            check("跑到外面去了" in said, "工作区外的东西发不出去：%r" % said)
 
             # 闸门：岛上这个桶一分钟两条
             check("没发" in xdao.call("xdao", json.dumps(

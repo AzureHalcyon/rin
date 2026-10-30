@@ -23,6 +23,7 @@ import io
 import hmac
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -51,6 +52,21 @@ def _store_of(server) -> LoopStore:
     return store
 
 
+def _owner_ids(data_dir: str) -> list:
+    """设置里「我的账号」：逗号（中文逗号、顿号、分号、空格都认）分开的号或昵称。"""
+    raw = str(settings.load(data_dir).get("owner_ids") or "")
+    for sep in ("，", "、", "；", ";", " ", "\t"):
+        raw = raw.replace(sep, ",")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _is_owner(owner: list, payload: dict) -> bool:
+    """这条算不算「我的账号」说的：号或昵称对得上就算。"""
+    sender = str(payload.get("sender_id") or "").strip()
+    name = str(payload.get("sender_name") or "").strip()
+    return any(item == sender or item == name for item in owner)
+
+
 def _entry_view(entry) -> dict:
     message = entry.message
     return {"role": str(message.get("role") or ""),
@@ -70,11 +86,15 @@ def _mtime(path: str) -> str:
 
 
 # ── 图：落地 + 要不要顺手看一眼 ───────────────────────────────────────────────
-# 图从通道进来时是字节或一个地址，落到她工作区里（`收件/<日期>/`），进件里只写
-# 一行事实。**图片本身不进上下文**：她的记录是文本流，`_turns()` 每步都重新渲染成
+# 图片从通道进来时是字节或一个地址，落到**图片库**（`<数据>/图片/<年-月>/`），进件里
+# 只写一行事实。**图片本身不进上下文**：她的记录是文本流，`_turns()` 每步都重新渲染成
 # 字符串，压缩也只吃文字；把图塞进去要同时改存储、渲染、压缩、预算四处，而旧块会
 # 一直背着它。她自己就看得见——核心拼请求时会把路径变成 image_url 段。
-_IMAGE_DIR = "收件"
+#
+# ★ 图片库在**工作区外面**（和工作区平级）：`run` 的沙箱只能写工作区，`write` 也只能
+#   写工作区，所以她和她那堆脚本都动不了这里。记录里只存路径，文件要是被删了图片就
+#   永远找不回来——所以这里不能是"她随手放东西的地方"，备份也覆盖它（`loop.backup`）。
+_IMAGE_DIR = "图片"
 _MAX_IMAGES = 4                      # 一条进件最多收几张：再多是刷屏，不是"发来一张图"
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _IMAGE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -92,14 +112,15 @@ def _ext_of(raw: bytes) -> str:
 
 
 def _save_image(data_dir: str, raw: bytes, index: int) -> str:
-    """存进 `收件/<日期>/`，返回相对工作区的路径（`收件/2026-10-30/221305-2.jpg`）。"""
-    folder = os.path.join(os.path.abspath(data_dir), "workspace",
-                          _IMAGE_DIR, time.strftime("%Y-%m-%d"))
-    name = "%s-%d%s" % (time.strftime("%H%M%S"), index, _ext_of(raw))
+    """存进图片库，返回记录里那种相对路径（`图片/2026-10/20261030-221305-2.jpg`）。"""
+    month = time.strftime("%Y-%m")
+    folder = os.path.join(os.path.abspath(data_dir), _IMAGE_DIR, month)
+    name = "%s-%s-%d%s" % (time.strftime("%Y%m%d"), time.strftime("%H%M%S"),
+                           index, _ext_of(raw))
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, name), "wb") as handle:
         handle.write(raw)
-    return "/".join((_IMAGE_DIR, time.strftime("%Y-%m-%d"), name))
+    return "/".join((_IMAGE_DIR, month, name))
 
 
 def _image_bytes(item) -> bytes:
@@ -136,7 +157,7 @@ def _size_of(raw: bytes) -> tuple:
 
 
 def _image_block(data_dir: str, images) -> tuple:
-    """把进件里的图收下来。回来 `(要写进正文的那几行, 挂在 meta 上的图清单)`。
+    """把进件里的图片收下来。回来 `(要写进正文的那几行, 挂在 meta 上的图片清单)`。
 
     图片**不在这里看**：她那个模型自己就看得见，核心会把清单里那些路径拼成
     `image_url` 段。这一层只管两件事——落地、给正文留一行事实（多大的图片、在哪儿）。
@@ -162,7 +183,7 @@ def _image_block(data_dir: str, images) -> tuple:
             lines.append("（一张 %d×%d 的图：%s）" % (width, height, rel))
         else:
             lines.append("（一张图片：%s）" % rel)
-        landed.append({"path": "workspace/" + rel, "w": width, "h": height})
+        landed.append({"path": rel, "w": width, "h": height})
     return "\n".join(lines), landed
 
 
@@ -253,7 +274,11 @@ class _Handler(BaseHTTPRequestHandler):
             if route.path == "/state":
                 return self._send(200, self._state())
             if route.path == "/context":
-                return self._send(200, self._context())
+                return self._send(200, self._context(parse_qs(route.query)))
+            if route.path == "/qq/status":
+                return self._send(200, self._qq_status())
+            if route.path == "/qq/qr":
+                return self._qq_qr()
             if route.path == "/settings":
                 return self._send(200, self._settings_payload())
             if route.path == "/channels":
@@ -291,6 +316,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._archive()
             if route.path == "/alerts/clear":
                 return self._clear_alert()
+            if route.path == "/qq/restart":
+                return self._qq_restart()
         except Exception as exc:
             return self._send(500, {"error": "内部出错：%s" % exc})
         return self._send(404, {"error": "没有这个地址"})
@@ -405,6 +432,12 @@ class _Handler(BaseHTTPRequestHandler):
         if ext_id and store.inbox_has_ext(ext_id):
             # 同一条外部消息推过一遍了（补拉历史、重连补漏）：不再插，也不再叫醒她
             return self._send(200, {"ok": True, "duplicate": True, "id": 0})
+        # 「这条是对方说的」：设置里填了「我的账号」就以它为准，没填就用通道报的兜底
+        # （QQ 桥按白名单标）。墙钟拿它算「距上次对方说话」，群里别人、岛上的回帖不算。
+        from_user = bool(payload.get("from_user"))
+        owner = _owner_ids(self.server.data_dir)
+        if owner:
+            from_user = _is_owner(owner, payload)
         item_id = store.push(
             str(payload.get("kind") or "user"), text,
             policy=str(payload.get("policy") or ""),
@@ -416,6 +449,7 @@ class _Handler(BaseHTTPRequestHandler):
             sender_name=str(payload.get("sender_name") or ""),
             meta=meta,
             direct=bool(payload.get("direct")),
+            from_user=from_user,
             ext_id=ext_id)
         return self._send(200, {"ok": True, "id": item_id})
 
@@ -456,7 +490,7 @@ class _Handler(BaseHTTPRequestHandler):
         config = self.server.config
         before = {key: getattr(config, key, None) for key in
                   ("model", "temperature", "max_tokens", "summary_model",
-                   "summary_provider", "embed_model", "embed_dim")}
+                   "embed_model", "embed_dim")}
         settings.apply(config, stored)
         loop = getattr(self.server, "loop", None)
 
@@ -468,8 +502,7 @@ class _Handler(BaseHTTPRequestHandler):
             client_config.reasoning_effort = str(
                 getattr(config, "reasoning_effort", "") or "")
 
-        if (before["summary_model"] != config.summary_model
-                or before["summary_provider"] != config.summary_provider):
+        if before["summary_model"] != config.summary_model:
             compressor = getattr(loop, "compressor", None)
             rebuild = getattr(compressor, "rebuild", None)
             if callable(rebuild):
@@ -588,19 +621,12 @@ class _Handler(BaseHTTPRequestHandler):
             url, key = credentials.chat_url, credentials.chat_key
         elif kind == "embed":
             # 嵌入固定走嵌入端点（百炼那组）；它跟对话渠道不是一家
-            url, key = credentials.summary_url, credentials.summary_key
+            url, key = credentials.maas_url, credentials.maas_key
             if not url:
                 url, key = credentials.chat_url, credentials.chat_key
         else:
-            model = str(getattr(config, "summary_model", "") or "")
-            provider = str(getattr(config, "summary_provider", "auto") or "auto")
-            if provider == "auto":
-                provider = "bailian" if "qwen" in model.lower() else "deepseek"
-            if provider == "bailian" and credentials.summary_url:
-                url = credentials.summary_url
-                key = credentials.summary_key or credentials.chat_key
-            else:
-                url, key = credentials.chat_url, credentials.chat_key
+            # 摘要跟对话是一家：换端点就是换对话地址，不另选
+            url, key = credentials.chat_url, credentials.chat_key
         base = str(url or "").rstrip("/")
         for suffix in ("/chat/completions", "/embeddings"):
             if base.endswith(suffix):
@@ -663,10 +689,12 @@ class _Handler(BaseHTTPRequestHandler):
         ("channels", "工具"),
         ("channels_set", "工具"),
         ("messages", "工具"),
+        ("look", "工具"),
         ("fetch", "工具"),
         ("search", "工具"),
         ("run", "工具"),
         ("write", "工具"),
+        ("myself", "工具"),
         ("bilibili_search", "工具"),
         ("bilibili_video", "工具"),
         ("bilibili_subtitles", "工具"),
@@ -739,11 +767,11 @@ class _Handler(BaseHTTPRequestHandler):
             # 没在设置里写过的，就把凭证文件里生效的那份显示出来（不然框是空的）
             values["chat_url"] = values.get("chat_url") or creds.chat_url
             values["embed_url"] = (values.get("embed_url")
-                                   or settings.embed_base_of(creds.summary_url))
+                                   or settings.embed_base_of(creds.maas_url))
             if not hints.get("chat_key"):
                 hints["chat_key"] = settings.hint_of(creds.chat_key)
             if not hints.get("embed_key"):
-                hints["embed_key"] = settings.hint_of(creds.summary_key)
+                hints["embed_key"] = settings.hint_of(creds.maas_key)
         hints = {k: v for k, v in hints.items() if v}
         return {"values": values,
                 "hints": hints,
@@ -792,10 +820,17 @@ class _Handler(BaseHTTPRequestHandler):
                 "steps": live["steps"],
                 "live": live,
                 "compressions": self._compressions(),
-                "current_tokens": estimate_tokens(current),
-                "context_tokens": (estimate_tokens(context.system_text())
-                                   + estimate_tokens(previous)
-                                   + estimate_tokens(current)),
+                # 当前块：优先用循环量出来的真数（服务端 prompt_tokens 减固定部分）。
+                # 只给估算的话，中文会被低估四成——页面上写着 39k/50k，实际早就 68k，
+                # 于是"为什么块没满也在压"根本对不上（2026-10-30 用户就问到这个）。
+                "current_tokens": int(getattr(loop, "current_real", 0) or 0)
+                                  or estimate_tokens(current),
+                "current_tokens_estimated": estimate_tokens(current),
+                # 整次请求：有服务端报的真数就用真数（估算是给"还没有真数"的时候兜底的）
+                "context_tokens": int(getattr(loop, "last_prompt_tokens", 0) or 0)
+                                  or (estimate_tokens(context.system_text())
+                                      + estimate_tokens(previous)
+                                      + estimate_tokens(current)),
                 "block_tokens": int(getattr(config, "block_tokens", 0)),
                 "context_budget": int(getattr(config, "context_budget", 0)),
                 "today": store.usage_today(),
@@ -846,7 +881,14 @@ class _Handler(BaseHTTPRequestHandler):
         return sum(1 for block in _store_of(self.server).blocks()
                    if block["state"] == "compressed")
 
-    def _context(self) -> dict:
+    def _context(self, query: dict = None) -> dict:
+        """抽屉那一份。
+
+        `previous`（上一块的原文）默认**不带条目**，只给条数与 token：那一块动辄
+        四五百条、两三百 KB，抽屉默认看不到它，带上来纯属每次刷新都白搬一遍。
+        要看原文就 `GET /context?prev=1`（页面上「上一块」点开时才问）。
+        """
+        want_prev = bool((query or {}).get("prev"))
         store = _store_of(self.server)
         config = self.server.config
         fold_keep = int(getattr(config, "tool_fold_keep", 0) or 0)
@@ -860,7 +902,18 @@ class _Handler(BaseHTTPRequestHandler):
                   "tokens": estimate_tokens(str(band.text or ""))}
                  for band in state["bands"]]
         previous = _block_view(state["previous"], fold_keep, user_name)
+        if not want_prev:
+            previous["entries"] = []
+            previous["loaded"] = False
+        else:
+            previous["loaded"] = True
         current = _block_view(state["current"], fold_keep, user_name)
+        # 当前块的 token：优先用循环量出来的真数（中文估算会低估四成左右，
+        # 页面上写 39k、实际 68k，就会让人以为"块还没满为什么在压"）
+        real = int(getattr(getattr(self.server, "loop", None), "current_real", 0) or 0)
+        if real:
+            current["tokens_estimated"] = current["tokens"]
+            current["tokens"] = real
         written = persona.read(config)
         script = persona.path_of(config)
         sink = context.sink()
@@ -878,15 +931,105 @@ class _Handler(BaseHTTPRequestHandler):
                             "hours": persona.hours_of(config),
                             "at": _mtime(script)},
                 "block_tokens": previous["tokens"] + current["tokens"],
-                "context_tokens": system_tokens + previous["tokens"] + current["tokens"],
+                "context_tokens": int(getattr(getattr(self.server, "loop", None),
+                                              "last_prompt_tokens", 0) or 0)
+                                  or (system_tokens + previous["tokens"]
+                                      + current["tokens"]),
                 "limits": {"block_tokens": int(getattr(config, "block_tokens", 0)),
                            "context_budget": int(getattr(config, "context_budget", 0)),
                            "band_budget": int(getattr(config, "band_budget", 0)),
                            "band_count": len(getattr(config, "band_chars", ()) or ()),
                            "tool_fold_keep": fold_keep}}
 
+    # ── QQ 通道：在线情况 + 扫码用的二维码 ────────────────────────────────
+    # 网页上这两样是为了「手机上就能把号救回来」：NapCat 被踢之后要扫码，
+    # 以前得登服务器翻容器日志里的二维码（或者进 WebUI）。
+    def _qq_setting(self, key: str, fallback: str = "") -> str:
+        config = self.server.config
+        try:
+            stored = settings.load(str(getattr(config, "data_dir", "") or ""))
+        except Exception:
+            stored = {}
+        return str(stored.get(key) or "").strip() or fallback
+
+    def _qq_base(self) -> str:
+        base = self._qq_setting("qq_base", os.environ.get("NAPCAT_BASE", "")
+                                or "http://127.0.0.1:3000")
+        return base.rstrip("/") if "://" in base else "http://" + base.rstrip("/")
+
+    def _qq_token(self) -> str:
+        return self._qq_setting("qq_token", os.environ.get("NAPCAT_TOKEN", ""))
+
+    def _qq_qr_path(self) -> str:
+        return self._qq_setting("qq_qr_file", "/opt/napcat/data/cache/qrcode.png")
+
+    def _qq_status(self) -> dict:
+        base = self._qq_base()
+        token = self._qq_token()
+        online = good = False
+        error = ""
+        try:
+            request = urllib.request.Request(base + "/get_status",
+                                             data=b"{}", method="POST")
+            request.add_header("Content-Type", "application/json")
+            if token:
+                request.add_header("Authorization", "Bearer " + token)
+            with urllib.request.urlopen(request, timeout=4) as response:
+                payload = json.loads(response.read() or b"{}")
+            data = (payload or {}).get("data") or {}
+            online = bool(data.get("online"))
+            good = bool(data.get("good", online))
+            if str((payload or {}).get("status") or "") == "failed":
+                error = str((payload or {}).get("message") or "NapCat 说没成")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            error = str(exc) or type(exc).__name__
+        qr = self._qq_qr_path()
+        info = {"path": qr, "exists": os.path.exists(qr)}
+        if info["exists"]:
+            try:
+                stamp = os.path.getmtime(qr)
+                info["mtime"] = time.strftime("%H:%M:%S", time.localtime(stamp))
+                info["age"] = int(time.time() - stamp)
+                info["bytes"] = os.path.getsize(qr)
+            except OSError:
+                pass
+        return {"ok": not error, "online": online, "good": good,
+                "base": base, "error": error, "qr": info}
+
+    def _qq_restart(self) -> None:
+        """把 NapCat 重启一次，换一张新的二维码。
+
+        用 `docker restart` 而不是 `start`：容器**已经在跑**的时候 `start` 什么
+        都不做，页面就会一直显示那张过期的码（2026-10-30 15:21 就是这么"点了重起
+        还是已过期"的）。NapCat 只在启动那一下生成二维码，所以必须真的重起。
+
+        sudoers 里只放行了这两条（见 `deploy/sudoers-rin-napcat`）。
+        """
+        try:
+            done = subprocess.run(["sudo", "-n", "docker", "restart", "napcat"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  timeout=180)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return self._send(500, {"error": "重起不来：%s" % exc})
+        out = done.stdout.decode("utf-8", "replace").strip()
+        ok = done.returncode == 0
+        return self._send(200 if ok else 500,
+                          {"ok": ok,
+                           "out": out[:300] or ("docker restart 退出码 %d"
+                                                % done.returncode)})
+
+    def _qq_qr(self) -> None:
+        path = self._qq_qr_path()
+        try:
+            with open(path, "rb") as handle:
+                body = handle.read()
+        except OSError:
+            return self._send(404, {"error": "还没有二维码：NapCat 没在等登录，"
+                                             "或者那个路径不对（%s）" % path})
+        return self._send(200, body, "image/png")
+
     def _persona(self) -> None:
-        """清空她自己写的描述（人这边留一个后门；模型那边不给她改的入口）。"""
+        """清空她自己写的描述（人这边留一个后门）。"""
         payload = self._body()
         config = self.server.config
         if payload.get("reset"):
@@ -937,18 +1080,59 @@ class _Handler(BaseHTTPRequestHandler):
                                 "note": "存下了，循环下一步就落到图里"})
 
     def _feed(self, query: dict) -> dict:
+        """增量原文。
+
+        三种问法：
+        - `since=b:s`（默认）：从这个位子往后（旧网页断线重连也走这条）；
+        - `tail=N`：最后 N 条，首屏用。整块从头重放要七百多 KB、九百多条，
+          手机上得好几秒，而且先看见的是最早的话，最新的排在最后才出来；
+        - `before=b:s&limit=N`：比这个位子更早的一页，往上翻用。
+        """
         store = _store_of(self.server)
-        since = str((query.get("since") or ["0:0"])[0])
-        try:
-            block, seq = [int(part) for part in since.split(":")]
-        except ValueError:
-            block, seq = 0, 0
         try:
             since_step = int((query.get("step") or ["0"])[0])
         except ValueError:
             since_step = 0
-        entries = store.feed(block, seq)
         steps = store.usage_since(since_step)
+
+        def pair_of(text: str):
+            try:
+                head, tail = str(text or "0:0").split(":")[:2]
+                return int(head), int(tail)
+            except (ValueError, AttributeError):
+                return 0, 0
+
+        if query.get("tail"):
+            try:
+                limit = max(1, min(300, int((query.get("tail") or ["60"])[0])))
+            except ValueError:
+                limit = 60
+            entries = store.feed_tail(limit)
+            cursor = {"block": entries[-1]["block"], "seq": entries[-1]["seq"]} \
+                if entries else {"block": 0, "seq": 0}
+            if entries:
+                older = store.feed_before(entries[0]["block"], entries[0]["seq"], 1)
+                more = bool(older)
+            else:
+                more = False
+            return {"entries": entries, "steps": [], "cursor": cursor, "more": more}
+
+        if query.get("before"):
+            block, seq = pair_of(str((query.get("before") or ["0:0"])[0]))
+            try:
+                limit = max(1, min(300, int((query.get("limit") or ["60"])[0])))
+            except ValueError:
+                limit = 60
+            entries = store.feed_before(block, seq, limit)
+            more = bool(entries) and bool(
+                store.feed_before(entries[0]["block"], entries[0]["seq"], 1))
+            cursor = {"block": entries[-1]["block"], "seq": entries[-1]["seq"]} \
+                if entries else {"block": block, "seq": seq}
+            return {"entries": entries, "steps": steps, "cursor": cursor,
+                    "more": more}
+
+        block, seq = pair_of(str((query.get("since") or ["0:0"])[0]))
+        entries = store.feed(block, seq)
         cursor = {"block": block, "seq": seq}
         if entries:
             cursor = {"block": entries[-1]["block"], "seq": entries[-1]["seq"]}
@@ -989,8 +1173,8 @@ def serve(config, path: str, token: str = "",
     httpd.credentials = credentials
     httpd.embed_factory = embed_factory
     httpd.models_cache = {}
-    summary_url = str(getattr(credentials, "summary_url", "") or "")
-    httpd.embed_host = urlsplit(summary_url).netloc if summary_url else ""
+    embed_url = str(getattr(credentials, "maas_url", "") or "")
+    httpd.embed_host = urlsplit(embed_url).netloc if embed_url else ""
     threading.Thread(target=httpd.serve_forever, daemon=True, name="web").start()
     return httpd
 

@@ -107,8 +107,9 @@ def collect(config, log=lambda text: None) -> list:
 def _fetch_image(reply: dict, config) -> dict:
     """回复里挂了图片就把它落地，回来 `{"path", "w", "h"}`；没有就空字典。
 
-    落进 `<数据>/workspace/收件/<日期>/`（和 QQ、网页来的图片一个地方），
-    记录里只存路径——核心拼请求时再读出来、缩一遍。
+    落进**图片库**（`<数据>/图片/<年-月>/`，和 QQ、网页来的图片一个地方）——那儿在
+    工作区外面，她的 `run` / `write` 动不了；记录里只存路径，核心拼请求时再读出来、
+    缩一遍。
     """
     url = xdao.image_of(reply)
     if not url:
@@ -125,9 +126,10 @@ def _fetch_image(reply: dict, config) -> dict:
     ext = str(reply.get("ext") or ".jpg").strip() or ".jpg"
     if not ext.startswith("."):
         ext = "." + ext
-    folder = os.path.join(str(getattr(config, "data_dir", ".") or "."), "workspace",
-                          "收件", time.strftime("%Y-%m-%d"))
-    name = "%s-岛%s%s" % (time.strftime("%H%M%S"), reply.get("id") or "x", ext)
+    month = time.strftime("%Y-%m")
+    folder = os.path.join(str(getattr(config, "data_dir", ".") or "."), "图片", month)
+    name = "%s-%s-岛%s%s" % (time.strftime("%Y%m%d"), time.strftime("%H%M%S"),
+                             reply.get("id") or "x", ext)
     try:
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, name), "wb") as handle:
@@ -142,7 +144,7 @@ def _fetch_image(reply: dict, config) -> dict:
             width, height = int(image.size[0]), int(image.size[1])
     except Exception:
         pass
-    rel = "workspace/收件/%s/%s" % (time.strftime("%Y-%m-%d"), name)
+    rel = "图片/%s/%s" % (month, name)
     return {"path": rel, "w": width, "h": height}
 
 

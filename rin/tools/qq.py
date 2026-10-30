@@ -15,6 +15,7 @@ NapCat 有九十来个动作。**一个动作一个工具**会把她的工具面
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import urllib.error
@@ -23,13 +24,16 @@ from typing import List
 
 from loop import prompt_files
 from rin import alerts, limit
-from rin.tools import qq_actions, workspace
+from rin.tools import media, qq_actions, workspace
 
 NAMES = ("qq",)
 
 DOC_NAME = "QQ-动作清单.md"
 _TIMEOUT = 20
 _KEEP = 1500          # 返回太长就截断：够她判断，别把上下文塞满
+
+# 这三个的 `message` 可以是段数组，所以能挂图。发文件和相册那些另有自己的入口。
+WITH_IMAGE = ("send_private_msg", "send_group_msg", "send_msg")
 
 
 def doc_path(config=None) -> str:
@@ -115,6 +119,39 @@ def _post(action: str, params: dict, config=None) -> dict:
     return json.loads(raw.decode("utf-8", "replace") or "{}")
 
 
+def _with_images(params: dict, config=None) -> str:
+    """把 `params.image` / `params.images` 变成消息里的图，回来一句"带了什么"（没图就空串）。
+
+    NapCat 的 `message` 可以是字符串（整段文字）也可以是段数组；**只有段数组能带图**。
+    所以要么不带图（原样发），要么把 `message` 换成 `[文字段, 图段…]`——文字在前、
+    图按给的顺序跟在后面，和人在群里"说一句然后甩两张图"是一个样子。
+    图用 `base64://`：NapCat 在容器里，看不见 `/opt/rin/data`，路径传不过去；
+    缩过之后一张几百 KB，这一段 base64 只活在发给 NapCat 的那个请求里，
+    她这边给的一直是**路径**。
+    """
+    raw = params.pop("images", None)
+    if raw is None:
+        raw = params.pop("image", None)
+    if not raw:
+        return ""
+    paths = raw if isinstance(raw, list) else [raw]
+    parts: List[dict] = []
+    message = params.get("message")
+    if isinstance(message, str):
+        if message.strip():
+            parts.append({"type": "text", "data": {"text": message}})
+    elif isinstance(message, list):
+        parts.extend(message)         # 她要是自己拼好了段，就接着往下加
+    notes = []
+    for item in paths:
+        picture = media.prepare(config, item)
+        parts.append({"type": "image", "data": {
+            "file": "base64://" + base64.b64encode(picture["data"]).decode("ascii")}})
+        notes.append(media.note_of(picture))
+    params["message"] = parts
+    return "带图 %d 张：%s" % (len(notes), "、".join(notes))
+
+
 def call(name: str, arguments: str, config=None) -> str:
     if name != "qq":
         return "没有这个工具：%s" % name
@@ -141,6 +178,15 @@ def call(name: str, arguments: str, config=None) -> str:
         return "这个动作不给：%s（%s）。" % (action, qq_actions.BLOCKED[action])
     if not qq_actions.known(action):
         return "清单里没有这个动作：%s。用 index 看组，help 看一组。" % action
+    # 图要在过闸之前准备好：找不到文件、不是图，都不该占掉一次发送额度
+    carried = ""
+    if action in WITH_IMAGE:
+        if "message" not in params and "text" in params:
+            params["message"] = params.pop("text")     # text 是这边的别名
+        try:
+            carried = _with_images(params, config)
+        except media.MediaError as exc:
+            return str(exc)
     # 发消息那几个过一道闸：被牵着刷屏是收不回来的那种坏（见 rin/limit.py）
     if action.startswith("send"):
         allowed, why = limit.allow(config)
@@ -164,6 +210,8 @@ def call(name: str, arguments: str, config=None) -> str:
     if len(text) > _KEEP:
         text = text[:_KEEP] + "…（截断）"
     head = "%s（%s）" % (action, note)
+    if carried:
+        head = "%s｜%s" % (carried, head)
     if str(reply.get("status") or "") == "failed" or int(reply.get("retcode") or 0) != 0:
         return "%s 没做成：%s" % (head, text)
     if danger:

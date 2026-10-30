@@ -1,10 +1,21 @@
 给 QQ 那边发一个动作：收发消息、看群和好友、改资料、空间。
 
+你说的话不会自己到 QQ 上：要回谁，就在这里把话发出去（`send_private_msg` / `send_group_msg`）。
+发出去收不回来，发之前先看清发给谁。
+
 ```
 qq(action="get_friend_list", params={})
 qq(action="get_group_list", params={})
 qq(action="send_private_msg", params={"user_id": 10000, "message": "在"})
+qq(action="send_private_msg", params={"user_id": 10000, "text": "看这个",
+                                      "images": ["收件/2026-10-30/a.jpg", "收件/b.png"]})
 ```
+
+**发图**：`send_private_msg` / `send_group_msg` / `send_msg` 这三个，一次调用就能带 1 到几张图——
+文字放 `text`（也可以仍叫 `message`），图放 `images`（一串路径）或者 `image`（一张）。
+图从工作区里取（`收件/…` 这种相对路径，和 `look` 一个规矩），jpg / png / gif / webp 都认；
+长边超过 1024 的先缩到 1024 再发，给原图就行。文字在前、图按你给的顺序跟在后头；
+只发图就不用给文字。结果前面会写一句"带图 N 张：哪张、多大、缩没缩"。
 
 动作分 14 组，一组一页：
 
@@ -22,4 +33,4 @@ qq(action="send_private_msg", params={"user_id": 10000, "message": "在"})
 
 ## params
 参数对象，比如 `{"user_id": 10000, "message": "在"}`；`help` 时传 `{"group": "组名"}`。
-没有参数就给 `{}`。
+没有参数就给 `{}`。发图时多给 `images` / `image`，文字可以用 `text` 代替 `message`。

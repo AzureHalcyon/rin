@@ -36,6 +36,10 @@ BLOCKED: Dict[str, str] = {
     "get_csrf_token": "账号凭据",
     "get_credentials": "账号凭据",
     "set_13": "内部私有动作，不是给人用的",
+    # 2026-10-30 实测：schema 上写着"仅 Windows 端支持"，Linux 这台上要么回
+    # `image字段可能格式不正确`，要么把请求挂到超时（NapCat 本身没事）。给了只会
+    # 让她白试一次；抠图上的字让 `look` 自己看更省事。
+    "ocr_image": "这台机器上用不了：NapCat 的 OCR 只有 Windows 端才有，Linux 上会挂住请求",
 }
 
 # 分组动作表：(动作, 当心)。一句话说明优先用 NapCat 自己的 summary。
@@ -207,7 +211,6 @@ CATALOG: List[Tuple[str, List[Tuple[str, bool]]]] = [
         ("set_custom_face_desc", False),
     ]),
     ("识别与翻译", [
-        ("ocr_image", False),
         ("translate_en2zh", False),
         ("check_url_safely", False),
     ]),

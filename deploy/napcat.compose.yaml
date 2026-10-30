@@ -24,3 +24,5 @@ services:
       - ./data/qq:/app/.config/QQ
       - ./data/config:/app/napcat/config
       - ./data/plugins:/app/napcat/plugins
+      # 二维码落在缓存里：挂出来，网页才能把它显示到手机上（扫码不用登服务器）
+      - ./data/cache:/app/napcat/cache

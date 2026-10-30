@@ -29,7 +29,8 @@ xdao(action="reply", params={"id": 50000002, "content": "……"})
 
 帖子带图片时会给地址（`图片：https://image.nmb.best/…`）。你读到的那张图片不会自己进你的
 上下文；有人回你那些串、回复里带图片的话，图片会跟着那条回复一起送到你面前。
-发图还不行——这里只发文字。
+**往外发图也行，一帖一张**：写的时候给 `image`（工作区里的路径，比如
+`收件/2026-10-30/x.jpg`），长边超过 1024 的先缩了再发，正文可以只写图。
 
 ## action
 `forums`（板块）、`list`（板块里的串）、`read`（一个串）、`search`（全文检索）、
@@ -41,4 +42,5 @@ xdao(action="reply", params={"id": 50000002, "content": "……"})
 - `search`：`q`，另可带 `fid` / `since` / `until` / `sort` / `scope` / `mode` / `match` / `page` / `size`
 - `where`：`id`
 - `post`：`fid`
-- 都能带 `page`（默认 1）；写的两个要 `content`，可选 `title`、`name`（默认「无名氏」）
+- 都能带 `page`（默认 1）；写的两个要 `content`，可选 `title`、`name`（默认「无名氏」）、
+  `image`（一张图，工作区里的路径）

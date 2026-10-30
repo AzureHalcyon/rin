@@ -1,5 +1,5 @@
 [Unit]
-Description=NapCat 登录失败守护：连着 10 次登不上就停下容器，等人工扫码
+Description=NapCat 登录失败守护：连着 2 次登不上就停下容器，等人工扫码
 After=docker.service
 Requires=docker.service
 
@@ -7,7 +7,11 @@ Requires=docker.service
 Type=simple
 # 要调 docker，所以是 root；提示写给网页看的那份文件在数据目录里。
 Environment=ALERT_FILE=/opt/rin/data/alerts.json
-Environment=NAPCAT_FAIL_LIMIT=10
+# 两次就停：每次被踢之后 NapCat 自己每两分钟敲一次门，敲十次（二十分钟）在风控
+# 眼里就是"反复试密码"。宁可停下来等人扫码。
+Environment=NAPCAT_FAIL_LIMIT=2
+# 检查间隔拉到十分钟：被踢之后不要每分钟都去数、更不要频繁重启
+Environment=NAPCAT_GUARD_INTERVAL=600
 ExecStart=/usr/bin/python3 /opt/napcat/guard.py
 Restart=always
 RestartSec=30

@@ -130,6 +130,12 @@ body{display:flex;min-height:100vh}
 .divider::after{content:"";flex:1;height:1px;background:var(--line)}
 .divider:first-child{margin-top:0}
 
+/* 往上翻的一格：首屏只画最近这一小段，更早的点这里取一页 */
+.earlier{display:none;margin:4px auto 14px;padding:5px 14px;border:1px solid var(--line2);
+  border-radius:999px;background:transparent;color:var(--ghost);
+  font:11.5px var(--sans);cursor:pointer;user-select:none}
+.earlier:hover{color:var(--fg2);border-color:var(--line3)}
+
 .row{display:flex;margin:10px 0}
 .row.user{justify-content:flex-end}
 .row.user .body{background:var(--bubble);border-radius:14px;padding:8px 14px;
@@ -162,6 +168,15 @@ details.frow>summary:hover{color:var(--fg2)}
 .fbody{padding:2px 0 6px 22px;font-family:var(--mono);font-size:12px;line-height:1.65;
   color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:320px;
   overflow:auto}
+/* 调用参数原文：摆在结果前面，灰一点、窄一点，跟结果区分开 */
+.fargs{padding:4px 0 6px 22px;font-family:var(--mono);font-size:11.5px;line-height:1.6;
+  color:var(--ghost);white-space:pre-wrap;word-break:break-word;max-height:220px;
+  overflow:auto;border-bottom:1px solid var(--line)}
+
+/* QQ 通道那一格：在线情况 + 掉线时摊开的二维码 */
+.qqpanel{margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}
+.qqpanel .qrimg img{width:min(260px, 70vw);height:auto;display:block;margin:10px 0;
+  background:#fff;padding:10px;border-radius:12px}
 
 /* 时间线里那行「提醒」：整行一块，靠左边一条橙杠认它。
    别叫 .note —— 抽屉里 role 的标签就是 class="r note"，两个撞在一起
@@ -337,7 +352,6 @@ details.frow>summary:hover{color:var(--fg2)}
   padding:1px 8px;color:var(--ghost)}
 .imsg.wait .st{color:var(--warn);border-color:currentColor}
 .imsg.gone .tx,.imsg.gone .who{opacity:.55}
-.tovia{margin-top:3px;font-size:10.5px;color:var(--ghost);font-family:var(--mono)}
 #inboxview .perr{color:var(--warn);font-size:12px;padding:8px 2px;font-family:var(--mono)}
 #inboxview .perr.quiet{color:var(--ghost)}
 #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
@@ -564,11 +578,16 @@ details.sub .sb{padding:4px 0 2px 8px;border-left:2px solid var(--line);
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
+/* 首屏只取最后一小段（TAIL 条），再往上点「更早」一页一页取（PAGE 条）。
+   以前是 since=0:0 从头重放：九百多条、七百多 KB，手机上要等好几秒，
+   而且先画出来的是最早的那几句，最新的排在最后才出来。 */
+const TAIL = 60, PAGE = 80;
 const S = {token: localStorage.getItem("palimpsest.token") || "",
-  since: "0:0", step: 0, lastStep: -1, pinned: true, sending: false, models: null,
+  since: null, step: 0, lastStep: -1, pinned: true, sending: false, models: null,
   polling: false,
   usage: new Map(), calls: new Map(), ctxAt: 0, cache: null, statusKind: "",
-  images: []};
+  images: [],
+  entries: [], head: null, moreOlder: false, loadingEarlier: false};
 
 const esc = (s) => String(s == null ? "" : s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -713,6 +732,58 @@ function delBtn(item) {
   return b;
 }
 
+/* 工具调用的「人话摘要」：折叠行只给一眼看得懂的那句，参数原文在展开里。
+   以前摘要那行是整串 JSON（还被省略号切掉），于是只看得到返回值、看不出她发了什么。 */
+function prettyArgs(raw) {
+  const text = String(raw || "");
+  if (!text) return "（没有参数）";
+  try { return JSON.stringify(JSON.parse(text), null, 2); } catch (e) { return text; }
+}
+
+function callHead(name, raw) {
+  let p = null;
+  try { p = JSON.parse(raw || "{}"); } catch (e) { p = null; }
+  const cut = (value, n) => {
+    const flat = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    return flat.length > n ? flat.slice(0, n) + "…" : flat;
+  };
+  if (!p || typeof p !== "object") return cut(raw, 80);
+  const params = (p.params && typeof p.params === "object") ? p.params : {};
+  if (name === "qq") {
+    const who = params.user_id ? "私聊 " + params.user_id
+      : params.group_id ? "群 " + params.group_id : "";
+    const msg = params.message != null ? params.message
+      : params.content != null ? params.content : "";
+    return [String(p.action || "qq"), who].filter(Boolean).join(" → ") +
+      (msg ? "：" + cut(msg, 120) : "");
+  }
+  if (name === "xdao") {
+    const body = params.content != null ? params.content : params.text;
+    return String(p.action || "xdao") + (body ? "：" + cut(body, 120) : "");
+  }
+  if (name === "wait") {
+    return p.until ? "等到 " + p.until
+      : ([].concat(p.kinds || []).join(" / ") || "等任何动静");
+  }
+  if (name === "run") return cut(p.command, 100);
+  if (name === "write") {
+    return String(p.path || "") +
+      (p.content ? "（" + String(p.content).length + " 字）" : "");
+  }
+  if (name === "myself") {
+    return p.text ? "整版换掉（" + String(p.text).length + " 字）" : "读现在这版";
+  }
+  if (name === "remember") return String(p.name || "");
+  if (name === "recall") return [].concat(p.keywords || []).join("、");
+  if (name === "recollect" || name === "forget" || name === "rename") {
+    return String(p.event || p.name || "");
+  }
+  if (name === "fetch") return String(p.url || "");
+  if (name === "search") return String(p.query || "");
+  if (name === "bilibili") return String(p.action || "");
+  return cut(raw, 80);
+}
+
 function addEntry(item) {
   const e = $("empty"); if (e) e.remove();
   const box = $("thread");
@@ -738,9 +809,19 @@ function addEntry(item) {
   let paired = false;
 
   if (item.role === "user") {
+    // meta.look：她自己"看"了一张图，不是对方说的话——画成系统注记，
+    // 别让人以为是自己刚发出去的消息（2026-10-30 就被这么误会过）
+    const look = (item.meta && item.meta.look) ||
+      /^（看这张图：/.test(String(item.text || ""));   // 老记录没 meta，靠这句话认
     const row = document.createElement("div");
-    row.className = "row user";
-    row.innerHTML = '<div class="body">' + esc(item.text) + "</div>";
+    if (look) {
+      row.className = "sysnote look";
+      row.textContent = String(item.text || "").replace(/\[图片\]/g, "").trim()
+        || "（看了一张图）";
+    } else {
+      row.className = "row user";
+      row.innerHTML = '<div class="body">' + esc(item.text) + "</div>";
+    }
     host.appendChild(row);
   } else if (item.role === "note") {
     const d = document.createElement("div");
@@ -782,7 +863,12 @@ function addEntry(item) {
       d.className = "frow";
       d.innerHTML = '<summary><span class="ico">›</span><span class="ttl">' +
         esc(fn.name) + '</span><span class="sdot"></span><span class="sum">' +
-        esc(fn.arguments || "") + "</span></summary>";
+        esc(callHead(fn.name, fn.arguments)) + "</span></summary>";
+      // 参数原样再来一份：摘要那行是给人一眼看的，真要看她发了什么，原文在这儿
+      const args = document.createElement("div");
+      args.className = "fargs";
+      args.textContent = prettyArgs(fn.arguments);
+      d.appendChild(args);
       S.calls.set(c.id || "", d);
       host.appendChild(d);
     }
@@ -792,16 +878,6 @@ function addEntry(item) {
       const body = document.createElement("div");
       body.className = "body";
       body.textContent = item.text;
-      // 这句话是回给谁的：外部叫醒她那几轮，她说的话会定向发回去（见 meta.via）
-      const via = item.meta && item.meta.via;
-      if (via) {
-        const tag = document.createElement("div");
-        tag.className = "tovia";
-        tag.textContent = "→ 已发到 " + (via.source || "外部") + " · " +
-          (via.chat_type === "group" ? "群" : "私聊") + "「" +
-          (via.chat_name || via.chat_id || "?") + "」";
-        body.appendChild(tag);
-      }
       row.appendChild(body);
       host.appendChild(row);
     }
@@ -826,42 +902,250 @@ function item(title, tag, meta, text) {
   return d;
 }
 
+/* ── 重画前后的位置锚 ───────────────────────────────────────────────────
+   内容在长（她正在写、工具结果一条条落），只记 scrollTop 会让人正在读的那句
+   被换掉——块一长，同样的像素就是另一段话了。所以记「视口里最上面那条是谁、
+   离顶多远」，画完再把它放回原处。能当锚的：一条记录（data-seq）、一个小折叠
+   块（data-sub）、一整块（data-key）。 */
+const ANCHOR_SEL = "[data-seq],[data-sub],[data-key]";
+
+function anchorIdOf(node) {
+  if (node.dataset.seq != null) return "seq:" + node.dataset.seq;
+  if (node.dataset.sub) return "sub:" + node.dataset.sub;
+  if (node.dataset.key) return "key:" + node.dataset.key;
+  return "";
+}
+
+function anchorAt(box) {
+  const top = box.getBoundingClientRect().top;
+  for (const node of box.querySelectorAll(ANCHOR_SEL)) {
+    const rect = node.getBoundingClientRect();
+    if (!rect.height) continue;              // 收起来的块量不出位置
+    if (rect.bottom <= top + 1) continue;    // 已经滚到视口上面
+    return {id: anchorIdOf(node), dy: rect.top - top};
+  }
+  return null;
+}
+
+function anchorNode(box, id) {
+  const cut = id.indexOf(":");
+  const attr = id.slice(0, cut);
+  if (attr !== "seq" && attr !== "sub" && attr !== "key") return null;
+  const value = id.slice(cut + 1);
+  for (const node of box.querySelectorAll(ANCHOR_SEL)) {
+    if (node.dataset[attr] === value) return node;
+  }
+  return null;
+}
+
+/* 把 box 滚到「那条还是原来那个位置」。找不到就返回 false，让调用方退回按像素恢复。 */
+function restoreTo(box, anchor) {
+  if (!anchor) return false;
+  const node = anchorNode(box, anchor.id);
+  if (!node) return false;
+  const rect = node.getBoundingClientRect();
+  if (!rect.height) return false;
+  box.scrollTop += rect.top - box.getBoundingClientRect().top - anchor.dy;
+  return true;
+}
+
+/* ── 抽屉里的一行 ───────────────────────────────────────────────────────
+   工具结果默认收起；一次调用连同它的结果折成一块（库里是「一条带 tool_calls
+   的 assistant」+ 若干条 tool，这里按 call_id 配对）。 */
+const ctxFold = (label, hint, text, kind, seq) => {
+  const h = typeof hint === "string" ? {head: hint, size: ""} : hint;
+  const sub = document.createElement("details");
+  sub.className = "sub";
+  sub.dataset.sub = kind + ":" + String(seq == null ? "" : seq);
+  sub.innerHTML = '<summary><span class="sl">' + esc(label) + "</span>" +
+    '<span class="sh"><span class="sp">' + esc(h.head) + "</span>" +
+    (h.size ? '<b class="sz">' + esc(h.size) + "</b>" : "") +
+    "</span></summary>" +
+    '<div class="sb">' + esc(text) + "</div>";
+  return sub;
+};
+
+/* 摘要一行：预览 + 字数。短的就整句给，别加省略号——「等了 3 分钟，对方说话了。… 14 字」
+   会让人以为后面还截掉了；只有真截了才点三个点。 */
+const ctxLenHint = (text) => {
+  const raw = String(text || "");
+  if (!raw) return {head: "空的", size: ""};
+  const flat = raw.replace(/\s+/g, " ").trim();
+  const head = flat.slice(0, 24);
+  return {head: flat.length > head.length ? head + "…" : head,
+    size: raw.length + " 字"};
+};
+
+function ctxCallFold(entry, resultOf, calls) {
+  const sub = document.createElement("details");
+  sub.className = "sub";
+  sub.dataset.sub = "call:" + String(entry.seq == null ? "" : entry.seq);
+  const names = (entry.calls || []).map((c) => (c.function || {}).name || "?")
+    .join("、");
+  let chars = 0;
+  let first = "";
+  const units = [];
+  for (const c of entry.calls || []) {
+    const fn = c.function || {};
+    const hit = resultOf.get(c.id || "");
+    const text = String((hit || {}).text || "");
+    if (hit) {
+      chars += text.length;
+      if (!first) first = text.replace(/\s+/g, " ").trim();
+    }
+    units.push("→ " + (fn.name || "") + " " + (fn.arguments || "") + "\n" +
+      (hit ? (text || "（空）") : "（还没回）"));
+  }
+  const head = first ? first.slice(0, 20) + (first.length > 20 ? "…" : "") : "";
+  sub.innerHTML = '<summary><span class="sl">调 ' + (entry.calls || []).length +
+    " 次</span>" + '<span class="sh"><span class="sp">' +
+    esc(chars ? names + " · " + head : names) + "</span>" +
+    (chars ? '<b class="sz">' + chars + " 字</b>" : "") + "</span></summary>";
+  const sb = document.createElement("div");
+  sb.className = "sb";
+  sb.textContent = units.join("\n\n");
+  sub.appendChild(sb);
+  for (const c of entry.calls || []) calls.set(c.id || "", {sb: sb});
+  return sub;
+}
+
+function ctxRow(e, resultOf, calls) {
+  const row = document.createElement("div");
+  row.className = "entry";
+  // 行号当锚：重画之后靠它把正在读的那一行放回原来的高度
+  if (e.seq != null) row.dataset.seq = String(e.seq);
+  const r = document.createElement("span");
+  r.className = "r " + String(e.role || "");
+  r.textContent = String(e.role || "").slice(0, 4);
+  const cwrap = document.createElement("span");
+  cwrap.className = "cwrap";
+  if ((e.calls || []).length) cwrap.appendChild(ctxCallFold(e, resultOf, calls));
+  if (e.role === "tool") {
+    cwrap.appendChild(ctxFold("结果", ctxLenHint(e.text || ""), e.text || "（空）",
+      "result", e.seq));
+  } else if (e.text) {
+    const c = document.createElement("span");
+    c.className = "c";
+    c.textContent = String(e.text);
+    cwrap.appendChild(c);
+  }
+  row.append(r, cwrap);
+  return row;
+}
+
+/* 一块（上一块 / 当前块）画进一个 .body。
+   工具结果并进它那次调用：不并的话一块里一半的行都是「结果」，读起来像日志。 */
+function fillBlock(body, data) {
+  const resultOf = new Map();
+  for (const e of data.entries || []) {
+    if (e.role === "tool" && e.call_id) resultOf.set(e.call_id, e);
+  }
+  const taken = new Set();
+  for (const e of data.entries || []) {
+    for (const c of (e.calls || [])) {
+      const hit = resultOf.get(c.id || "");
+      if (hit) taken.add(hit.seq);
+    }
+  }
+  const calls = new Map();
+  const want = document.createElement("div");
+  for (const e of data.entries || []) {
+    if (e.role === "tool" && taken.has(e.seq)) continue;   // 已经挂在调用那行里
+    want.appendChild(ctxRow(e, resultOf, calls));
+  }
+  body.appendChild(want);
+  return {resultOf: resultOf, taken: taken, calls: calls};
+}
+
+/* 抽屉的增量状态：结构没变就只把新行接在底下，不再整棵重画。
+   整棵重建会让展开状态、滚动位置、正在读的那一段都跳回去——每 2.5 秒跳一次，
+   手机上还会一顿一顿。 */
+const CTX = {sig: "", body: null, rendered: [], resultOf: null, taken: null,
+  calls: new Map(), previousLoaded: false};
+
+function ctxSigOf(c) {
+  // 只放"结构"：条目变多不算结构变化（那种走追加），换块、换提示词、换自我描述才算
+  return JSON.stringify([c.sink.chars,
+    (c.bands || []).map((b) => b.chars).join(","),
+    c.previous.count, c.previous.start_ts, c.current.start_ts,
+    (c.persona || {}).text ? c.persona.text.length : 0]);
+}
+
+function ctxCanAppend(c) {
+  if (!CTX.body || !CTX.body.isConnected) return false;
+  if (CTX.sig !== ctxSigOf(c)) return false;
+  const entries = c.current.entries || [];
+  if (entries.length < CTX.rendered.length) return false;
+  for (let i = 0; i < CTX.rendered.length; i += 1) {
+    if (!entries[i] || entries[i].seq !== CTX.rendered[i]) return false;
+  }
+  return true;
+}
+
+function ctxAppend(box, c) {
+  const entries = c.current.entries || [];
+  const fresh = entries.slice(CTX.rendered.length);
+  for (const e of fresh) {
+    if (e.role === "tool" && e.call_id && CTX.calls.has(e.call_id)) {
+      // 结果并进它那一次调用：接着往后写，不新开一行
+      const slot = CTX.calls.get(e.call_id);
+      if (slot && slot.sb) {
+        const text = String(e.text || "（空）");
+        slot.sb.textContent = slot.sb.textContent
+          ? slot.sb.textContent + "\n\n" + text : text;
+      }
+      continue;
+    }
+    CTX.body.appendChild(ctxRow(e, CTX.resultOf, CTX.calls));
+  }
+  CTX.rendered = entries.map((e) => e.seq);
+  $("d-sub").textContent = "整次请求 " + k(c.context_tokens);
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
 function renderContext(c) {
   S.cache = c;
   const box = $("d-body");
-  // 抽屉每 2.5 秒拉一次：只有内容真的变了才重画。整棵 DOM 重建会让展开状态、
-  // 滚动位置、正在读的那一段都跳回去——"点开几秒又收起来"就是这么来的。
-  const sig = JSON.stringify([
+  // 正在选中这页上的字（多半在抄东西）就先别动：重画会把选区抹掉。
+  const sel = window.getSelection();
+  if (sel && String(sel).trim() && sel.anchorNode && box.contains(sel.anchorNode)) return;
+  if (ctxCanAppend(c)) { ctxAppend(box, c); return; }
+
+  const first = !S.ctxSig;      // 这一轮之前画过没有（要在赋值前记下来）
+  const mark = (data) => (data.entries || []).map(
+    (e) => e.seq + ":" + String(e.text || "").length).join("|");
+  S.ctxSig = JSON.stringify([
     c.sink.chars, c.sink.tokens, c.context_tokens,
     c.current.count, c.current.tokens, c.previous.count, c.previous.tokens,
     c.bands.map((b) => [b.level, b.chars, b.tokens]),
+    mark(c.current), mark(c.previous),
   ]);
-  if (sig === S.ctxSig && box.childElementCount) {
-    $("d-sub").textContent = "整次请求 " + k(c.context_tokens);
-    return;
-  }
-  const first = !S.ctxSig;      // 这一轮之前画过没有（要在赋值前记下来）
-  S.ctxSig = sig;
   // 抽屉每 2.5 秒重画一次：先把哪些块是展开的、滚到哪儿记下来，画完再恢复，
   // 否则点开「系统提示」几秒后自己就收起来了。
   const opened = new Set();
-  const inner = new Map();          // data-key → {top, atBottom}
+  const inner = new Map();          // data-key → {top, atBottom, anchor}
   const subs = new Set();           // 展开过的小块（工具结果/调用）
   box.querySelectorAll("details.sub").forEach((node) => {
     if (node.open) subs.add(node.dataset.sub || "");
   });
   box.querySelectorAll("details").forEach((node) => {
-    if (node.open) opened.add(node.dataset.key || "");
     const key = node.dataset.key || "";
+    /* 小折叠块（工具调用/结果）没有 data-key：以前这里会把它们的 "" 记进
+       opened，重画时又按 "" 把**所有**没有 key 的块一起打开——点开一个工具，
+       过两秒全展开。key 判断就是这一行。 */
+    if (key && node.open) opened.add(key);
     const body = key ? node.querySelector(".body") : null;
     if (body) {
       inner.set(key, {
         top: body.scrollTop,
         atBottom: body.scrollHeight - body.scrollTop - body.clientHeight < 8,
+        anchor: anchorAt(body),
       });
     }
   });
   const scroll = box.scrollTop;
+  const outerAnchor = anchorAt(box);
   box.innerHTML = "";
   $("d-sub").textContent = "整次请求 " + k(c.context_tokens);
 
@@ -892,41 +1176,17 @@ function renderContext(c) {
   }
   box.appendChild(s2);
 
-  /* 抽屉里的小折叠块：一条工具结果默认收起，点开才展开全文。
-     键用库里的行号（/context 带 seq）；万一没有就退到「本块内第几条」，
-     总比所有折叠块共用一个键强——那会让点开一个、别的跟着开。 */
-  const fold = (label, hint, text, kind, seq) => {
-    const h = typeof hint === "string" ? {head: hint, size: ""} : hint;
-    const sub = document.createElement("details");
-    sub.className = "sub";
-    sub.dataset.sub = kind + ":" + String(seq == null ? "" : seq);
-    sub.innerHTML = '<summary><span class="sl">' + esc(label) + "</span>" +
-      '<span class="sh"><span class="sp">' + esc(h.head) + "</span>" +
-      (h.size ? '<b class="sz">' + esc(h.size) + "</b>" : "") +
-      "</span></summary>" +
-      '<div class="sb">' + esc(text) + "</div>";
-    return sub.outerHTML;
-  };
-
-  /* 摘要一行：预览 + 字数。短的就整句给，别加省略号——「等了 3 分钟，对方说话了。… 14 字」
-     会让人以为后面还截掉了；只有真截了才点三个点。 */
-  const strLenHint = (text) => {
-    const raw = String(text || "");
-    if (!raw) return {head: "空的", size: ""};
-    const flat = raw.replace(/\s+/g, " ").trim();
-    const head = flat.slice(0, 24);
-    return {head: flat.length > head.length ? head + "…" : head,
-      size: raw.length + " 字"};
-  };
-
-  const block = (title, data, opened) => {
+  /* 两块：上一块默认只给条数（原文点开才取），当前块照常画。
+     工具结果并进它那次调用，见 fillBlock()。 */
+  const block = (title, data, opened, onDemand) => {
     const sec = document.createElement("div");
     sec.className = "sec";
     sec.innerHTML = "<h3>" + esc(title) + "</h3>";
     if (!data.count) {
       const p = document.createElement("div");
       p.className = "stat"; p.textContent = "空的。";
-      sec.appendChild(p); return sec;
+      sec.appendChild(p);
+      return {sec: sec, body: null, details: null, state: null};
     }
     const d = document.createElement("details");
     d.className = "item"; d.open = !!opened;
@@ -935,65 +1195,37 @@ function renderContext(c) {
       '<span class="meta">' + k(data.tokens) + " token</span></summary>" +
       '<div class="body"></div>';
     const body = d.querySelector(".body");
-    /* 工具结果并进它那一次调用：库里是「一条带 tool_calls 的 assistant」+ 若干条
-       tool，这里按 call_id 配对。不并的话一块里一半的行都是「结果」，读起来像日志。 */
-    const resultOf = new Map();
-    for (const e of data.entries) {
-      if (e.role === "tool" && e.call_id) resultOf.set(e.call_id, e);
-    }
-    const taken = new Set();
-    for (const e of data.entries) {
-      for (const c of (e.calls || [])) {
-        const hit = resultOf.get(c.id || "");
-        if (hit) taken.add(hit.seq);
-      }
-    }
-    for (const e of data.entries) {
-      if (e.role === "tool" && taken.has(e.seq)) continue;   // 已经挂在调用那行里
-      const row = document.createElement("div");
-      row.className = "entry";
-      const tag = '<span class="r ' + esc(e.role) + '">' +
-        esc(e.role.slice(0, 4)) + "</span>";
-      const calls = e.calls || [];
-      const parts = [];
-      // 调用连同结果折成一行：参数和输出都上千字，展开能把块撑很长
-      if (calls.length) {
-        const names = calls.map((c) => (c.function || {}).name || "?").join("、");
-        const units = [];
-        let chars = 0;
-        let first = "";
-        for (const c of calls) {
-          const fn = c.function || {};
-          const hit = resultOf.get(c.id || "");
-          const text = String((hit || {}).text || "");
-          if (hit) {
-            chars += text.length;
-            if (!first) first = text.replace(/\s+/g, " ").trim();
+    let state = null;
+    if (onDemand && data.loaded === false) {
+      // 上一块的原文不带：四五百条、两三百 KB，抽屉默认看不到它，要用再取
+      const hint = document.createElement("div");
+      hint.className = "stat";
+      hint.textContent = "点开才取原文（" + data.count + " 条）";
+      body.appendChild(hint);
+      d.addEventListener("toggle", async () => {
+        if (!d.open || body.dataset.filled) return;
+        body.dataset.filled = "1";
+        try {
+          const full = await api("/context?prev=1");
+          if (full.previous && (full.previous.entries || []).length) {
+            hint.remove();
+            fillBlock(body, full.previous);
           }
-          // 一次调用 + 它的结果算一块，块之间空一行：不空的话结果的正文跟参数黏在一起
-          units.push("→ " + (fn.name || "") + " " + (fn.arguments || "") + "\n" +
-            (hit ? (text || "（空）") : "（还没回）"));
+        } catch (e) {
+          body.dataset.filled = "";
+          toast("取上一块失败：" + e.message);
         }
-        const head = first ? first.slice(0, 20) + (first.length > 20 ? "…" : "") : "";
-        parts.push(fold("调 " + calls.length + " 次",
-          chars ? {head: names + " · " + head, size: chars + " 字"} : names,
-          units.join("\n\n"), "call", e.seq));
-      }
-      if (e.role === "tool") {
-        parts.push(fold("结果", strLenHint(e.text || ""), e.text || "（空）",
-          "result", e.seq));
-      } else if (e.text) {
-        parts.push('<span class="c">' + esc(e.text) + "</span>");
-      }
-      row.innerHTML = tag + '<span class="cwrap">' + parts.join("") + "</span>";
-      body.appendChild(row);
+      });
+    } else {
+      state = fillBlock(body, data);
     }
     sec.appendChild(d);
-    return sec;
+    return {sec: sec, body: body, details: d, state: state};
   };
-  box.appendChild(block("上一块（原文）", c.previous, false));
-  const currentSec = block("当前块（在写）", c.current, true);
-  box.appendChild(currentSec);
+  const prevBlock = block("上一块（原文）", c.previous, false, true);
+  box.appendChild(prevBlock.sec);
+  const currentBlock = block("当前块（在写）", c.current, true, false);
+  box.appendChild(currentBlock.sec);
 
   const s3 = document.createElement("div");
   s3.className = "sec";
@@ -1022,7 +1254,7 @@ function renderContext(c) {
       if (!confirm("清空她自己写的那段描述？")) return;
       try {
         await api("/persona", {method: "POST", body: JSON.stringify({reset: true})});
-        S.ctxSig = "";
+        S.ctxSig = ""; CTX.sig = "";
         renderContext(await api("/context"));
       } catch (e) { alert("清空失败：" + e.message); }
     };
@@ -1040,27 +1272,36 @@ function renderContext(c) {
   });
   box.querySelectorAll("details").forEach((node) => {
     const key = node.dataset.key || "";
+    if (!key) return;                  // 小折叠块只认 subs：不拿 "" 当键，否则一起开
     if (opened.has(key)) node.open = true;
-    const body = key ? node.querySelector(".body") : null;
+    const body = node.querySelector(".body");
     if (!body) return;
     const before = inner.get(key);
     if (!before) {
       body.scrollTop = body.scrollHeight;            // 头一次：停在最新（底部）
     } else if (before.atBottom) {
       body.scrollTop = body.scrollHeight;            // 原来就在底：跟着新内容走
-    } else {
-      body.scrollTop = before.top;                   // 在读旧的：原地不动
+    } else if (!restoreTo(body, before.anchor)) {
+      body.scrollTop = before.top;                   // 在读旧的：先按那条锚，锚不住再按像素
     }
   });
   if (first) {
     // 第一次画（或刚打开抽屉）：直接落到「当前块（在写）」的末尾——那儿才是最新的
-    const target = currentSec.querySelector("details");
+    const target = currentBlock.details;
     box.scrollTop = target
       ? Math.max(0, target.offsetTop + target.offsetHeight - box.clientHeight)
       : box.scrollHeight;
-  } else {
+  } else if (!restoreTo(box, outerAnchor)) {
     box.scrollTop = scroll;
   }
+
+  // 记下增量状态：下一轮只要结构没变，就只把新行接在底下（见 ctxAppend）
+  CTX.sig = ctxSigOf(c);
+  CTX.body = currentBlock.body;
+  CTX.rendered = (c.current.entries || []).map((e) => e.seq);
+  CTX.resultOf = (currentBlock.state || {}).resultOf || new Map();
+  CTX.taken = (currentBlock.state || {}).taken || new Set();
+  CTX.calls = (currentBlock.state || {}).calls || new Map();
 }
 
 /* ── 轮询 ─────────────────────────────────────────────────────────────── */
@@ -1101,7 +1342,8 @@ function paintDraft(st) {
 function paint(st) {
   paintDraft(st);
   $("s-name").textContent = st.name || "palimpsest";
-  const kinds = {thinking: "在想", waiting: "在等", parked: "挂着", retry: "重试", idle: "闲"};
+  const kinds = {thinking: "在想", waiting: "在等", parked: "挂着", retry: "重试",
+                 compressing: "在压", idle: "闲"};
   S.statusKind = (st.status && st.status.kind) || "";
   $("h-status").textContent = kinds[st.status.kind] || "—";
   $("h-detail").textContent = st.status.detail || "";
@@ -1139,20 +1381,92 @@ function paint(st) {
   $("st-hit").textContent = "命中 " + Math.round(100 * (live.hit_rate || 0)) + "%";
 }
 
+/* ── 更早的那一页 ───────────────────────────────────────────────────────
+   首屏只画最近 TAIL 条；点这里往前取一页接在上面。整块重放要九百多条，
+   手机等不起——所以是「按需往上」而不是「一次全给」。 */
+function paintEarlier() {
+  const box = $("thread");
+  if (!box) return;
+  let bar = $("earlier");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "earlier";
+    bar.className = "earlier";
+    bar.onclick = loadEarlier;
+    box.insertBefore(bar, box.firstChild);
+  }
+  bar.textContent = S.loadingEarlier ? "正在取更早的…" : "更早的记录";
+  bar.style.display = S.moreOlder ? "block" : "none";
+}
+
+function resetThread() {
+  const box = $("thread");
+  box.innerHTML = "";
+  S.calls.clear();
+  S.lastStep = -1;
+  if (!S.entries.length) {
+    const w = wrap();
+    w.innerHTML = '<div class="empty" id="empty">还没有记录。</div>';
+    box.appendChild(w);
+  }
+  for (const item of S.entries) addEntry(item);
+  paintEarlier();
+}
+
+async function loadEarlier() {
+  if (!S.head || S.loadingEarlier) return;
+  const box = $("thread");
+  const keep = box.scrollHeight - box.scrollTop;   // 视口顶到内容底的距离
+  const pinned = S.pinned;
+  S.loadingEarlier = true;
+  S.pinned = false;                                // 重画时别被「跟着底走」抢走
+  paintEarlier();
+  try {
+    const data = await api("/feed?before=" + S.head.block + ":" + S.head.seq +
+                           "&limit=" + PAGE);
+    if (data.entries.length) {
+      S.entries = data.entries.concat(S.entries);
+      S.head = {block: data.entries[0].block, seq: data.entries[0].seq};
+      S.moreOlder = !!data.more;
+      resetThread();
+      box.scrollTop = Math.max(0, box.scrollHeight - keep);
+    } else {
+      S.moreOlder = false;
+    }
+  } catch (e) {
+    toast("取更早的记录失败：" + e.message);
+  } finally {
+    S.loadingEarlier = false;
+    S.pinned = pinned;
+    paintEarlier();
+  }
+}
+
 async function poll() {
   // 同一时刻只跑一轮：send() / 换模型 / 登录都会顺手再调一次，
   // 两轮拿同一批 /feed 各自 addEntry 一遍，页面上就会出现重复的那句话。
   if (S.polling) return;
   S.polling = true;
   try {
-    const [feed, st] = await Promise.all([
-      api("/feed?since=" + encodeURIComponent(S.since) + "&step=" + S.step),
-      api("/state"),
-    ]);
+    const first = S.since === null;    // 还没对齐：先只要最后这一小段
+    const path = first ? "/feed?tail=" + TAIL
+      : "/feed?since=" + encodeURIComponent(S.since) + "&step=" + S.step;
+    const [feed, st] = await Promise.all([api(path), api("/state")]);
     for (const u of feed.steps) S.usage.set(u.step, u);
     if (feed.steps.length) S.step = feed.steps[feed.steps.length - 1].step;
-    for (const e of feed.entries) addEntry(e);
+    if (first) {
+      S.entries = [];
+      resetThread();
+    }
+    for (const e of feed.entries) { S.entries.push(e); addEntry(e); }
+    if (first) {
+      S.moreOlder = !!feed.more;
+      S.head = feed.entries.length
+        ? {block: feed.entries[0].block, seq: feed.entries[0].seq} : null;
+      paintEarlier();
+    }
     if (feed.entries.length) S.since = feed.cursor.block + ":" + feed.cursor.seq;
+    else if (first) S.since = "0:0";    // 一条都还没有：退回增量，等她说第一句
     paint(st);
     const empty = $("empty");
     if (empty && empty.textContent !== "还没有记录。") empty.textContent = "还没有记录。";
@@ -1347,7 +1661,9 @@ function chatLabel(it) {
   const source = it.source || "未知来源";
   if (!it.chat_id) return source;
   const name = it.chat_name || it.chat_id;
-  const kind = it.chat_type === "group" ? "群" : "私聊";
+  // 群的、串的（论坛帖子底下那串）、私聊的：形状照实说，别一律叫私聊
+  const kind = it.chat_type === "group" ? "群"
+    : (it.chat_type === "thread" ? "串" : "私聊");
   return source + " · " + kind + "「" + name + "」";
 }
 
@@ -1461,7 +1777,8 @@ $("into").onclick = () => {
   S.token = $("token").value.trim();
   localStorage.setItem("palimpsest.token", S.token);
   $("login").style.display = "none";
-  S.since = "0:0"; S.step = 0; S.lastStep = -1; S.calls.clear();
+  S.since = null; S.step = 0; S.lastStep = -1; S.calls.clear();
+  S.entries = []; S.head = null; S.moreOlder = false; S.loadingEarlier = false;
   $("thread").innerHTML = '<div class="wrap"><div class="empty" id="empty">载入中…</div></div>';
   poll();
 };
@@ -1657,8 +1974,149 @@ async function loadChannels(box) {
   }
 }
 
-function renderSettings(data) {
-  SET_DATA = data;
+/* ── QQ 那一格：在线情况 + 掉线时把二维码摊在手机上 ─────────────────────
+   被风控踢下线之后要扫码；以前只能登服务器翻容器日志。现在手机上点两下就够。 */
+let QQ_WATCH = 0;
+let QQ_QR_TIMER = 0;
+
+function paintQQLine(box, st) {
+  const line = box.querySelector(".qhline");
+  if (!line) return;
+  const state = st.online ? (st.good === false ? "在线（状态不健康）" : "在线") : "离线";
+  let qrBit = "";
+  if (st.qr && st.qr.exists) {
+    qrBit = " · 二维码 " + (st.qr.mtime || "");
+    if (!st.online && (st.qr.age || 0) > 240) qrBit += "（可能过期了，点「重起 NapCat」换一张）";
+  }
+  line.textContent = "NapCat：" + state + (st.error ? "（" + st.error + "）" : "") +
+    " · " + st.base + qrBit;
+  line.style.color = st.online ? "" : "var(--warn)";
+}
+
+async function paintQQ(box) {
+  const line = box.querySelector(".hline");
+  if (line) line.textContent = "正在问 NapCat…";
+  try {
+    const st = await api("/qq/status");
+    paintQQLine(box, st);
+    return st;
+  } catch (e) {
+    const box2 = box.querySelector(".qhline");
+    if (box2) box2.textContent = "问不到网关：" + e.message;
+    return null;
+  }
+}
+
+async function showQQQR(box) {
+  let holder = box.querySelector(".qrimg");
+  if (!holder) {
+    holder = document.createElement("div");
+    holder.className = "qrimg";
+    box.appendChild(holder);
+  }
+  holder.textContent = "正在取二维码…";
+  try {
+    const url = await qrBlobUrl();
+    holder.innerHTML = "";
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "扫码登录";
+    img.dataset.qr = "1";
+    const tip = document.createElement("div");
+    tip.className = "hint";
+    tip.textContent = "用手机 QQ 扫这个（号被踢或冻结之后要重新扫）。二维码自己会换，"
+      + "停在这一页扫就行；扫完这里会自己变在线。";
+    holder.append(img, tip);
+    qqQRWatch(box, holder);
+  } catch (e) {
+    holder.textContent = String(e.message || e);
+  }
+}
+
+async function qrBlobUrl() {
+  const res = await fetch("/qq/qr", {headers: {Authorization: "Bearer " + S.token}});
+  if (!res.ok) {
+    let why = "";
+    try { why = String((await res.json()).error || ""); } catch (e) { }
+    throw new Error(why || ("HTTP " + res.status));
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
+/* 二维码两分钟就过期：停在那一页时自己换新的，不用人再点一次 */
+function qqQRWatch(box, holder) {
+  clearInterval(QQ_QR_TIMER);
+  QQ_QR_TIMER = setInterval(async () => {
+    if (!document.body.contains(holder)) { clearInterval(QQ_QR_TIMER); return; }
+    const st = await paintQQ(box);
+    if (st && st.online) { clearInterval(QQ_QR_TIMER); return; }
+    const img = holder.querySelector("img[data-qr]");
+    if (!img) return;
+    try {
+      const url = await qrBlobUrl();
+      const old = img.src;
+      img.src = url;
+      if (old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+    } catch (e) { /* 下一轮再说 */ }
+  }, 25000);
+}
+
+function qqPanel() {
+  const box = document.createElement("div");
+  box.className = "qqpanel";
+  const line = document.createElement("div");
+  line.className = "hint qhline";
+  line.style.padding = "10px 0 4px";
+  line.textContent = "正在问 NapCat…";
+  const row = document.createElement("div");
+  row.className = "chips";
+  const again = document.createElement("button");
+  again.textContent = "再看一眼";
+  again.onclick = () => paintQQ(box);
+  const qr = document.createElement("button");
+  qr.textContent = "二维码";
+  qr.onclick = () => showQQQR(box);
+  // 守护停掉容器之后，只有人点这一下才会再起：起完等几秒让 NapCat 生成新码
+  const restart = document.createElement("button");
+  restart.textContent = "重起 NapCat";
+  restart.onclick = async () => {
+    restart.disabled = true;
+    restart.textContent = "正在重起…";
+    try {
+      const before = (await api("/qq/status")).qr || {};
+      await api("/qq/restart", {method: "POST", body: "{}"});
+      toast("NapCat 正在重起，等新二维码…");
+      // 等到二维码文件真的换了一张再显示：docker restart 之后 NapCat 要十几秒才写盘
+      for (let i = 0; i < 25; i += 1) {
+        await new Promise((done) => setTimeout(done, 2000));
+        const st = await paintQQ(box);
+        if (st && st.qr && st.qr.mtime && st.qr.mtime !== before.mtime) break;
+      }
+      await showQQQR(box);
+    } catch (e) {
+      toast("重起不了：" + e.message);
+    } finally {
+      restart.disabled = false;
+      restart.textContent = "重起 NapCat";
+    }
+  };
+  row.append(again, qr, restart);
+  box.append(line, row);
+  paintQQ(box).then((st) => qqWatch(box, st && st.online));
+  return box;
+}
+
+function qqWatch(box, online) {
+  clearInterval(QQ_WATCH);
+  if (online) return;                  // 在线就不用盯着
+  QQ_WATCH = setInterval(async () => {
+    if (!document.body.contains(box)) { clearInterval(QQ_WATCH); return; }
+    const st = await paintQQ(box);
+    if (st && st.online) clearInterval(QQ_WATCH);
+  }, 5000);
+}
+
+function renderSettings(data) {  SET_DATA = data;
   SET_FIELDS = data.fields;
   S.hints = Object.assign({}, data.hints || {});
   const box = $("set-body");
@@ -1705,6 +2163,9 @@ function renderSettings(data) {
         fmtVal(cur) !== fmtVal(data.values[f.key]);
       sec1.appendChild(fieldRow(f, cur, data.defaults[f.key], pending));
     }
+  }
+  if (SET_GROUP === "QQ") {
+    sec1.appendChild(qqPanel());
   }
   if (SET_GROUP === "记忆" && data.memory) {
     const m = data.memory;

@@ -15,12 +15,13 @@ import side
 
 ORDER = [
     "check_tools", "check_memory", "check_recall_log", "check_input_line",
-    "check_web", "check_qq_bridge", "check_qq_tool", "check_bili_tool",
+    "check_web", "check_qq_bridge", "check_qq_tool", "check_persona_tool",
+    "check_bili_tool",
     "check_settings",
     "check_memory_tools", "check_page_edits", "check_channel_settings",
     "check_channel", "check_workspace", "check_web_tools", "check_shell",
     "check_cli", "check_guard", "check_outbound", "check_injection_guard",
-    "check_image", "check_xdao", "check_xdao_feed",
+    "check_image", "check_media", "check_xdao", "check_xdao_feed",
 ]
 
 
